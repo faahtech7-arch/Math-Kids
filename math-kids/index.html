@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Math Kids — Quem vai jogar?</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Baloo+2:wght@500;700;800&family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div class="cloud cloud1"></div>
+<div class="cloud cloud2"></div>
+
+<header>
+  <div class="logo-badge">
+    <span class="icon">🧮</span>
+    <span>Math <b>Kids</b></span>
+  </div>
+  <h1>Quem vai jogar hoje?</h1>
+  <p>Toque no seu personagem para entrar</p>
+</header>
+
+<main>
+  <div class="avatar-grid" id="avatarGrid" role="list">
+    <!-- Avatares carregados do Supabase via script.js (sem texto livre) -->
+    <p style="grid-column:1/-1; text-align:center; font-weight:700; color:var(--ink-soft);">Carregando avatares...</p>
+  </div>
+
+  <div class="helper-row">
+    <button type="button" id="openRespHub">Área do responsável</button>
+  </div>
+</main>
+
+<!-- Overlay do teclado de PIN -->
+<div class="overlay" id="pinOverlay" aria-hidden="true">
+  <div class="pin-sheet" id="pinSheet" role="dialog" aria-modal="true" aria-labelledby="pinAvatarName">
+    <div class="pin-sheet-header">
+      <div class="avatar-face" id="pinAvatarFace"></div>
+      <div class="who">
+        <p>Digite seu PIN</p>
+        <h2 id="pinAvatarName">—</h2>
+      </div>
+      <button class="close-btn" id="closePinBtn" aria-label="Fechar">✕</button>
+    </div>
+
+    <div class="pin-dots" id="pinDots">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    </div>
+
+    <p class="pin-feedback" id="pinFeedback" role="status" aria-live="polite"></p>
+
+    <div class="keypad" id="keypad">
+      <!-- gerado via JS -->
+    </div>
+  </div>
+</div>
+
+<!-- Tela de sucesso / transição para o menu de fases -->
+<div class="success-screen" id="successScreen">
+  <div class="big-face" id="successFace"></div>
+  <h2 id="successText">Oi, ‑‑!</h2>
+  <p>Carregando suas fases...</p>
+</div>
+
+<!-- Área do responsável: cadastro da criança + consentimento (história 3.2), nunca acessível pela criança -->
+<div class="overlay" id="respOverlay" aria-hidden="true">
+  <div class="pin-sheet resp-sheet" id="respSheet" role="dialog" aria-modal="true" aria-labelledby="respStepTitle">
+    <div class="pin-sheet-header">
+      <div class="who">
+        <p class="step-eyebrow" id="respStepEyebrow">Área do responsável</p>
+        <h2 class="step-title" id="respStepTitle">O que você precisa?</h2>
+      </div>
+      <button class="close-btn" id="closeRespBtn" aria-label="Fechar">✕</button>
+    </div>
+
+    <div class="step-progress" id="respProgress"></div>
+
+    <div id="respStepBody"><!-- gerado via JS conforme o passo atual --></div>
+  </div>
+</div>
+
+<script type="module" src="js/script.js"></script>
+</body>
+</html>

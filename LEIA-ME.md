@@ -38,10 +38,38 @@ ou escrever direto nas tabelas.
   completo (dados → consentimento → escolher avatar + PIN) grava tudo via
   `cadastrar_responsavel` e o avatar novo aparece na tela inicial.
 
-## O que ainda falta (fora do escopo desta integração)
+## Jogo: sessão + progressão (histórias 4.x)
+
+O `schema.sql` agora também cria:
+
+- **`sessoes`** — token opaco (hex de 36 chars) devolvido por `iniciar_sessao`
+  no login por avatar + PIN. Expira em 12h. Todas as chamadas de progresso
+  exigem esse token, então não dá pra gravar progresso de um avatar sem
+  saber o PIN dele. O front guarda o token no `sessionStorage`
+  (`js/sessao.js`), nunca o PIN.
+- **`progresso`** — uma linha por `(avatar, fase)` com estrelas, melhor
+  pontuação, acertos, se foi concluída e nº de tentativas. Guarda sempre o
+  **melhor** desempenho (`greatest(...)` no `on conflict`).
+
+Novas funções RPC (todas `security definer`, `grant execute ... to anon`):
+
+| função | usada em | o que faz |
+|---|---|---|
+| `iniciar_sessao(avatar_id, pin)` | `js/script.js` | valida o PIN e devolve o token de sessão (ou `null`) |
+| `carregar_progresso(token)` | `js/jogar.js`, `js/partida.js` | devolve o progresso de todas as fases do avatar |
+| `salvar_resultado_fase(token, fase, pontos, estrelas, acertos, total)` | `js/partida.js` | grava o resultado da fase mantendo o melhor |
+| `encerrar_sessao(token)` | botão "Sair" | apaga o token (logout) |
+
+`avatar_da_sessao(token)` é um helper interno (não concedido ao `anon`).
+
+Se você já rodou a versão anterior do `schema.sql`, é só rodar o arquivo
+inteiro de novo no SQL Editor — tudo usa `create ... if not exists` e
+`create or replace function`, então re-executar é seguro.
+
+## O que ainda falta (fora do escopo)
 - História 3.6 (recuperar PIN esquecido) — hoje só mostra um `alert()`.
   Dá pra plugar com uma função `redefinir_pin(...)` no mesmo padrão das
   outras.
-- Sessão real pós-login (história 4.1): hoje o `showSuccess()` só mostra a
-  telinha de boas-vindas; o redirect pra seleção de fases com o avatar
-  autenticado ainda precisa ser implementado.
+- Limpeza periódica de `sessoes` expiradas: `iniciar_sessao` já apaga as
+  vencidas a cada login; um cron do Supabase (`pg_cron`) faria isso de
+  forma proativa, mas não é obrigatório.

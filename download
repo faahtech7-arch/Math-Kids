@@ -1,0 +1,11 @@
+# Cache do MNIST (~11 MB) — baixado automaticamente por ferramentas/treinar_modelo.py
+ferramentas/.cache/
+
+# Dependências / build
+node_modules/
+
+# Sistema operacional / editor
+.DS_Store
+Thumbs.db
+*.log
+.vscode/

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Math Kids — Teste do reconhecimento (Critério: ≥ 80%)</title>
+<style>
+  body{ font-family: system-ui, sans-serif; margin:0; padding:24px; background:#0f1226; color:#eef; }
+  h1{ font-size:1.2rem; }
+  button{ font-size:1rem; padding:10px 18px; border-radius:10px; border:0; background:#4CC9F0; color:#04202a; font-weight:800; cursor:pointer; }
+  .resultado{ margin-top:18px; font-size:1.05rem; line-height:1.7; }
+  .grande{ font-size:2.4rem; font-weight:900; }
+  .pass{ color:#7ED957; } .fail{ color:#FF6F91; }
+  table{ border-collapse:collapse; margin-top:14px; }
+  td,th{ border:1px solid #334; padding:4px 10px; text-align:center; font-variant-numeric:tabular-nums; }
+  #erros{ display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+  #erros figure{ margin:0; background:#1b1f3a; padding:6px; border-radius:8px; font-size:.72rem; text-align:center; }
+  #erros canvas{ image-rendering:pixelated; width:56px; height:56px; background:#fff; border-radius:4px; }
+  .barra{ height:10px; background:#334; border-radius:6px; overflow:hidden; max-width:420px; }
+  .barra i{ display:block; height:100%; background:#7ED957; }
+</style>
+</head>
+<body>
+<h1>Teste automatizado do reconhecimento de dígitos</h1>
+<p>Roda o pipeline real de <code>js/reconhecimento.js</code> sobre 600 imagens do
+conjunto de <b>teste</b> do MNIST (holdout). Serve como proxy do Critério de
+Aceitação “taxa mínima de acerto de 80%”. Complemente com um teste manual com
+crianças escrevendo de verdade.</p>
+<p><em>Abra esta página por um servidor local (ex.: <code>python -m http.server</code> na pasta <code>math-kids/</code>) — <code>file://</code> não carrega módulos.</em></p>
+<button id="rodar">Rodar teste</button>
+<div class="resultado" id="saida"></div>
+<div id="erros"></div>
+
+<script type="module">
+import { criarReconhecedor } from "../js/reconhecimento.js";
+
+const saida = document.getElementById("saida");
+const errosEl = document.getElementById("erros");
+
+function canvasDaAmostra(bytes, off, lado){
+  // 28x28 -> canvas 300x300, dígito escuro sobre fundo transparente
+  const peq = document.createElement("canvas");
+  peq.width = lado; peq.height = lado;
+  const pc = peq.getContext("2d");
+  const img = pc.createImageData(lado, lado);
+  for (let i = 0; i < lado * lado; i++){
+    img.data[i*4] = img.data[i*4+1] = img.data[i*4+2] = 0;
+    img.data[i*4+3] = bytes[off + i];
+  }
+  pc.putImageData(img, 0, 0);
+  const g = document.createElement("canvas");
+  g.width = 300; g.height = 300;
+  const gc = g.getContext("2d");
+  gc.imageSmoothingEnabled = true;
+  gc.imageSmoothingQuality = "high";
+  gc.drawImage(peq, 0, 0, 300, 300);
+  return g;
+}
+
+function mini(bytes, off, lado){
+  const c = document.createElement("canvas");
+  c.width = lado; c.height = lado;
+  const cc = c.getContext("2d");
+  const img = cc.createImageData(lado, lado);
+  for (let i = 0; i < lado*lado; i++){
+    const v = 255 - bytes[off+i];
+    img.data[i*4] = img.data[i*4+1] = img.data[i*4+2] = v;
+    img.data[i*4+3] = 255;
+  }
+  cc.putImageData(img, 0, 0);
+  return c;
+}
+
+document.getElementById("rodar").addEventListener("click", async () => {
+  document.getElementById("rodar").disabled = true;
+  saida.innerHTML = "Carregando modelo e amostras...";
+  errosEl.innerHTML = "";
+
+  const [rec, amostras] = await Promise.all([
+    criarReconhecedor("../js/modelo-mnist.json"),
+    fetch("amostras-teste.json").then(r => r.json()),
+  ]);
+
+  const bytes = Uint8Array.from(atob(amostras.dados_b64), c => c.charCodeAt(0));
+  const lado = amostras.lado, n = amostras.n;
+  const labels = amostras.labels;
+
+  let acertos = 0, incertos = 0, incertosCertos = 0;
+  const porDigito = Array.from({ length: 10 }, () => ({ ok: 0, total: 0 }));
+  let mostrados = 0;
+
+  for (let k = 0; k < n; k++){
+    const alvo = Number(labels[k]);
+    const r = rec.classificar(canvasDaAmostra(bytes, k * lado * lado, lado));
+    porDigito[alvo].total++;
+    const acertou = r.digito === alvo;
+    if (acertou){ acertos++; porDigito[alvo].ok++; }
+    if (r.incerto){ incertos++; if (acertou) incertosCertos++; }
+    if (!acertou && mostrados < 40){
+      mostrados++;
+      const fig = document.createElement("figure");
+      fig.appendChild(mini(bytes, k * lado * lado, lado));
+      const cap = document.createElement("figcaption");
+      cap.textContent = `era ${alvo} · leu ${r.digito}` + (r.incerto ? " (?)" : "");
+      fig.appendChild(cap);
+      errosEl.appendChild(fig);
+    }
+    if (k % 60 === 0) saida.innerHTML = `Processando ${k}/${n}...`;
+  }
+
+  const taxa = acertos / n;
+  const passou = taxa >= 0.80;
+  const linhas = porDigito.map((d, i) =>
+    `<tr><td>${i}</td><td>${d.ok}/${d.total}</td><td>${(100*d.ok/d.total).toFixed(1)}%</td></tr>`).join("");
+
+  saida.innerHTML = `
+    <div class="grande ${passou ? "pass" : "fail"}">${(taxa*100).toFixed(1)}% &nbsp; ${passou ? "PASSOU ✅" : "ABAIXO DE 80% ❌"}</div>
+    <div class="barra"><i style="width:${(taxa*100).toFixed(1)}%; background:${passou ? "#7ED957" : "#FF6F91"}"></i></div>
+    <p>${acertos} de ${n} corretos. Critério de aceitação: ≥ 80%.</p>
+    <p>Sinalizados como “incerto” (o jogo pede pra reescrever): ${incertos}
+       ${incertos ? `— desses, ${incertosCertos} o modelo teria acertado mesmo assim.` : ""}</p>
+    <table><thead><tr><th>dígito</th><th>acertos</th><th>%</th></tr></thead><tbody>${linhas}</tbody></table>
+    <p style="margin-top:10px">Abaixo, alguns erros (imagem real · leitura do modelo):</p>
+  `;
+  document.getElementById("rodar").disabled = false;
+});
+</script>
+</body>
+</html>

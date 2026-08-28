@@ -3,7 +3,10 @@
 -- Rode este script inteiro no SQL Editor do Supabase (Project > SQL Editor)
 -- =========================================================================
 
--- pgcrypto: usado para gerar hash do PIN (nunca guardamos PIN em texto puro)
+-- pgcrypto: usado para gerar hash do PIN (nunca guardamos PIN em texto puro).
+-- No Supabase o pgcrypto vive no schema `extensions` (não em `public`), então
+-- todas as funções abaixo usam `search_path = public, extensions` para enxergar
+-- crypt() / gen_salt() / gen_random_bytes().
 create extension if not exists pgcrypto;
 
 -- -------------------------------------------------------------------------
@@ -80,7 +83,7 @@ create or replace function listar_avatares_ativos()
 returns table (id uuid, nome text, tipo text, cor text, accent text)
 language sql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
   select id, nome_predefinido as nome, tipo, cor, accent
   from avatares
@@ -93,7 +96,7 @@ create or replace function listar_avatares_disponiveis()
 returns table (id uuid, nome text, tipo text, cor text, accent text)
 language sql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
   select id, nome_predefinido as nome, tipo, cor, accent
   from avatares
@@ -107,7 +110,7 @@ create or replace function login_avatar(p_avatar_id uuid, p_pin text)
 returns boolean
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_hash text;
@@ -136,7 +139,7 @@ create or replace function cadastrar_responsavel(
 returns table (avatar_id uuid, nome text, tipo text, cor text, accent text)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_responsavel_id uuid;
@@ -169,6 +172,165 @@ begin
 end;
 $$;
 
+-- =========================================================================
+-- Sessão + Progressão do jogo (Sistema de Pontuação / Fases / Progressão)
+-- Histórias 4.x — a criança joga as 10 fases + extras e o progresso fica
+-- salvo por avatar. Mesmo padrão de segurança: RLS ligado, sem policy, e
+-- todo acesso pelas funções SECURITY DEFINER abaixo.
+-- =========================================================================
+
+-- Token de sessão emitido no login por avatar. Evita que qualquer cliente
+-- grave progresso de um avatar sem saber o PIN dele.
+create table if not exists sessoes (
+  token      text primary key,
+  avatar_id  uuid not null references avatares(id) on delete cascade,
+  criada_em  timestamptz not null default now(),
+  expira_em  timestamptz not null default (now() + interval '12 hours')
+);
+create index if not exists idx_sessoes_avatar on sessoes(avatar_id);
+
+-- Uma linha por (avatar, fase). Guarda sempre o MELHOR desempenho.
+create table if not exists progresso (
+  avatar_id      uuid not null references avatares(id) on delete cascade,
+  fase           int  not null,
+  estrelas       int  not null default 0 check (estrelas between 0 and 3),
+  melhor_pontos  int  not null default 0,
+  melhor_acertos int  not null default 0,
+  total_questoes int  not null default 0,
+  concluida      boolean not null default false,
+  tentativas     int  not null default 0,
+  atualizado_em  timestamptz not null default now(),
+  primary key (avatar_id, fase)
+);
+
+alter table sessoes  enable row level security;
+alter table progresso enable row level security;
+
+-- Helper interno: resolve o avatar dono de um token válido (não expirado).
+-- Não é concedida ao anon; só as funções abaixo a usam.
+create or replace function avatar_da_sessao(p_token text)
+returns uuid
+language sql
+security definer
+set search_path = public, extensions
+as $$
+  select avatar_id from sessoes
+  where token = p_token and expira_em > now();
+$$;
+revoke execute on function avatar_da_sessao(text) from public;
+
+-- 5) Login por avatar + PIN que DEVOLVE um token de sessão (história 3.1/4.1)
+create or replace function iniciar_sessao(p_avatar_id uuid, p_pin text)
+returns text
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_hash  text;
+  v_token text;
+begin
+  delete from sessoes where expira_em < now();
+
+  select pin_hash into v_hash
+  from avatares
+  where id = p_avatar_id and ativo = true;
+
+  if v_hash is null or v_hash <> crypt(p_pin, v_hash) then
+    return null;
+  end if;
+
+  v_token := encode(gen_random_bytes(18), 'hex');
+  insert into sessoes (token, avatar_id) values (v_token, p_avatar_id);
+  return v_token;
+end;
+$$;
+
+-- 6) Progresso completo do avatar logado (menu de fases)
+create or replace function carregar_progresso(p_token text)
+returns table (
+  fase int, estrelas int, melhor_pontos int,
+  melhor_acertos int, total_questoes int, concluida boolean, tentativas int
+)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_avatar uuid := avatar_da_sessao(p_token);
+begin
+  if v_avatar is null then
+    raise exception 'Sessão inválida ou expirada';
+  end if;
+  return query
+    select p.fase, p.estrelas, p.melhor_pontos, p.melhor_acertos,
+           p.total_questoes, p.concluida, p.tentativas
+    from progresso p
+    where p.avatar_id = v_avatar
+    order by p.fase;
+end;
+$$;
+
+-- 7) Salva o resultado de uma fase (mantém sempre o melhor)
+create or replace function salvar_resultado_fase(
+  p_token    text,
+  p_fase     int,
+  p_pontos   int,
+  p_estrelas int,
+  p_acertos  int,
+  p_total    int
+)
+returns table (fase int, estrelas int, melhor_pontos int, concluida boolean)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_avatar uuid := avatar_da_sessao(p_token);
+begin
+  if v_avatar is null then
+    raise exception 'Sessão inválida ou expirada';
+  end if;
+  if p_fase is null or p_fase < 1 or p_fase > 999 then
+    raise exception 'Fase inválida';
+  end if;
+  if p_estrelas < 0 or p_estrelas > 3 or p_acertos < 0
+     or p_total <= 0 or p_total > 30 or p_acertos > p_total then
+    raise exception 'Resultado inválido';
+  end if;
+
+  insert into progresso as pr
+    (avatar_id, fase, estrelas, melhor_pontos, melhor_acertos,
+     total_questoes, concluida, tentativas, atualizado_em)
+  values
+    (v_avatar, p_fase, greatest(p_estrelas, 0), greatest(p_pontos, 0), p_acertos,
+     p_total, p_estrelas >= 1, 1, now())
+  on conflict (avatar_id, fase) do update set
+    estrelas       = greatest(pr.estrelas, excluded.estrelas),
+    melhor_pontos  = greatest(pr.melhor_pontos, excluded.melhor_pontos),
+    melhor_acertos = greatest(pr.melhor_acertos, excluded.melhor_acertos),
+    total_questoes = excluded.total_questoes,
+    concluida      = pr.concluida or excluded.concluida,
+    tentativas     = pr.tentativas + 1,
+    atualizado_em  = now();
+
+  return query
+    select pr.fase, pr.estrelas, pr.melhor_pontos, pr.concluida
+    from progresso pr
+    where pr.avatar_id = v_avatar and pr.fase = p_fase;
+end;
+$$;
+
+-- 8) Logout explícito (opcional — a sessão também expira sozinha em 12h)
+create or replace function encerrar_sessao(p_token text)
+returns void
+language sql
+security definer
+set search_path = public, extensions
+as $$
+  delete from sessoes where token = p_token;
+$$;
+
 -- -------------------------------------------------------------------------
 -- Permissões: a anon key só pode EXECUTAR estas funções, não ler as tabelas
 -- -------------------------------------------------------------------------
@@ -176,3 +338,7 @@ grant execute on function listar_avatares_ativos() to anon;
 grant execute on function listar_avatares_disponiveis() to anon;
 grant execute on function login_avatar(uuid, text) to anon;
 grant execute on function cadastrar_responsavel(text, text, uuid, text, text) to anon;
+grant execute on function iniciar_sessao(uuid, text) to anon;
+grant execute on function carregar_progresso(text) to anon;
+grant execute on function salvar_resultado_fase(text, int, int, int, int, int) to anon;
+grant execute on function encerrar_sessao(text) to anon;

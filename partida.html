@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Math Kids — Jogando</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Baloo+2:wght@500;700;800&family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/jogo.css">
+</head>
+<body>
+
+<div class="cloud cloud1"></div>
+<div class="cloud cloud2"></div>
+
+<div class="carregando-tela" id="carregando">
+  <div class="bola"></div>
+  <p id="carregandoTexto">Preparando os desafios...</p>
+</div>
+
+<div class="hud">
+  <div class="hud-linha">
+    <button class="btn-voltar" id="btnVoltar" aria-label="Voltar ao mapa">←</button>
+    <span class="titulo-fase" id="tituloFase">Fase</span>
+    <span class="chip vidas" id="chipVidas">❤❤❤</span>
+  </div>
+  <div class="hud-linha">
+    <span class="chip pontos">⭐ <span id="pontos">0</span></span>
+    <span class="chip combo" id="chipCombo" hidden>🔥 <span id="combo">0</span></span>
+    <span class="chip" id="chipQuestao">1/8</span>
+  </div>
+  <div class="barra-progresso"><i id="barraProg"></i></div>
+  <div class="barra-tempo" id="barraTempoWrap" hidden><i id="barraTempo"></i></div>
+</div>
+
+<div class="cartao-conta">
+  <div class="conta" id="conta">— =</div>
+  <div class="slots" id="slots"></div>
+</div>
+
+<div class="area-desenho">
+  <div class="tela-wrap" id="telaWrap">
+    <canvas id="tela" width="300" height="300"></canvas>
+    <div class="guia">Escreva o número aqui com o dedo ou o mouse</div>
+  </div>
+  <div class="acoes-desenho">
+    <button class="btn-apagar" id="btnApagar">Apagar</button>
+    <button class="btn-conferir" id="btnConferir" disabled>Conferir</button>
+  </div>
+  <p class="aviso" id="aviso" role="status" aria-live="polite"></p>
+</div>
+
+<div class="fim-overlay" id="fimOverlay">
+  <div class="fim-cartao">
+    <h2 id="fimTitulo">Fase concluída!</h2>
+    <div class="fim-estrelas" id="fimEstrelas"></div>
+    <div class="fim-numeros" id="fimNumeros"></div>
+    <div class="fim-acoes" id="fimAcoes"></div>
+    <p class="salvo-aviso" id="salvoAviso"></p>
+  </div>
+</div>
+
+<script type="module" src="js/partida.js"></script>
+</body>
+</html>

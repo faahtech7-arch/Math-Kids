@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Math Kids — Suas fases</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Baloo+2:wght@500;700;800&family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/jogo.css">
+</head>
+<body>
+
+<div class="cloud cloud1"></div>
+<div class="cloud cloud2"></div>
+
+<div class="jogo-topo">
+  <div class="avatar-face" id="avatarFace"></div>
+  <div class="quem">
+    <p>Bora jogar,</p>
+    <h1 id="avatarNome">—</h1>
+  </div>
+  <span class="placar-estrelas">⭐ <span id="totalEstrelas">0</span>/<span id="maxEstrelas">39</span></span>
+  <button class="btn-sair" id="btnSair">Sair</button>
+</div>
+
+<main class="mapa">
+  <h2>Fases</h2>
+  <div class="fases-grid" id="gridFases"></div>
+
+  <h2>Fases extras 🎁</h2>
+  <div class="fases-grid" id="gridExtras"></div>
+</main>
+
+<script type="module" src="js/jogar.js"></script>
+</body>
+</html>

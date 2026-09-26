@@ -36,6 +36,12 @@
 </div>
 
 <div class="cartao-conta">
+  <!-- Contexto do problema (Épico 3, história 5.3): historinha do dia a dia
+       + ilustração. Fica `hidden` quando a questão não tem enunciado. -->
+  <div class="contexto" id="contexto" role="group" aria-label="Enunciado do problema" hidden>
+    <span class="ilustracao" id="ilustracao" aria-hidden="true"></span>
+    <p class="enunciado" id="enunciado"></p>
+  </div>
   <div class="conta" id="conta">— =</div>
   <div class="slots" id="slots" role="group" aria-label="Sua resposta"></div>
 </div>

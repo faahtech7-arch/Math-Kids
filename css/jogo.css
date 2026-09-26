@@ -259,3 +259,52 @@
   .slot.certo, .slot.errado, .chip.vidas.perdeu, .chip.combo{ animation:none; }
   *{ transition-duration:.01ms !important; }
 }
+
+/* =========================================================================
+   Épico 3 — Conteúdo pedagógico e gestão de fases
+   ========================================================================= */
+
+/* ---------- Status da fase no mapa (história 5.2) ----------
+   O status agora vem do back-end (liberada / bloqueada / concluida), então
+   o cartão precisa DIZER em que pé a fase está, não só ficar cinza. */
+.fase-card .status{
+  font-family:var(--body); font-size:.66rem; font-weight:900; letter-spacing:.3px;
+  text-transform:uppercase; border:2px solid var(--ink); border-radius:999px;
+  padding:2px 9px; line-height:1.5; white-space:nowrap;
+}
+.fase-card .status.liberada{ background:var(--sun); color:var(--ink); }
+.fase-card .status.concluida{ background:var(--mint); color:#fff; }
+.fase-card .status.bloqueada{ background:#DADAE2; color:var(--ink-soft); border-color:var(--ink-soft); }
+
+/* ---------- Contexto da questão: ilustração + enunciado (história 5.3) ----------
+   O problema deixa de ser "14 + 8" solto e passa a ter uma historinha do dia
+   a dia com uma ilustração. A conta continua logo abaixo, porque é ela que a
+   criança precisa resolver — o enunciado dá sentido, não substitui. */
+.cartao-conta .contexto{
+  display:none; /* ligado pela regra :not([hidden]) abaixo */
+  align-items:center; gap:12px; text-align:left;
+  background:var(--paper); border:3px solid var(--ink); border-radius:var(--radius-md);
+  padding:10px 14px; margin-bottom:16px;
+}
+/* `hidden` sozinho não vence um display:flex do autor — por isso ligamos o
+   flex só quando o atributo NÃO está presente. */
+.cartao-conta .contexto:not([hidden]){ display:flex; }
+
+.contexto .ilustracao{
+  font-size:2.2rem; line-height:1; flex:0 0 auto;
+  filter:drop-shadow(2px 2px 0 rgba(20,20,26,.18));
+}
+.contexto .enunciado{
+  font-family:var(--body); font-size:.95rem; font-weight:700; line-height:1.35;
+  color:var(--ink); margin:0;
+}
+
+@media (max-width:400px){
+  .cartao-conta .contexto{ gap:9px; padding:9px 11px; }
+  .contexto .ilustracao{ font-size:1.8rem; }
+  .contexto .enunciado{ font-size:.88rem; }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .contexto .ilustracao{ filter:none; }
+}

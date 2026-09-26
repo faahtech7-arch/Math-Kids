@@ -388,6 +388,8 @@
   .btn:active{ transform: translate(3px,3px); box-shadow: 0 0 0 var(--ink); }
   .btn.primary{ background:var(--mint); color:#fff; }
   .btn.primary:disabled{ opacity:0.45; cursor:not-allowed; }
+  .btn.danger{ background:#E5484D; color:#fff; }
+  .btn.danger:disabled{ opacity:0.45; cursor:not-allowed; }
   .btn.ghost{ background:#fff; color:var(--ink-soft); flex:0 0 auto; padding:14px 18px; box-shadow: 3px 3px 0 var(--ink); }
 
   .mini-keypad-wrap .keypad{ margin-top:4px; }

@@ -250,7 +250,7 @@ function closeRespHub(){
 
 function renderProgress(){
   respProgress.innerHTML = "";
-  if(respStep === 0){ return; } // barra de progresso só aparece dentro do fluxo de cadastro
+  if(typeof respStep !== "number" || respStep === 0){ return; } // barra de progresso só aparece dentro do fluxo de cadastro
   for(let i = 1; i <= TOTAL_STEPS; i++){
     const seg = document.createElement("span");
     seg.className = "seg" + (i < respStep ? " done" : "") + (i === respStep ? " current" : "");
@@ -279,8 +279,16 @@ function renderRespStep(){
           <span class="sub">Redefinir o PIN de um avatar já existente</span>
         </span>
       </button>
+      <button type="button" class="option-card" id="goDelete">
+        <span class="emoji">🗑️</span>
+        <span>
+          <strong>Excluir um avatar</strong>
+          <span class="sub">Apagar o avatar e o progresso dele, liberando para outra criança</span>
+        </span>
+      </button>
     `;
     document.getElementById("goRegister").addEventListener("click", () => { respStep = 1; renderRespStep(); });
+    document.getElementById("goDelete").addEventListener("click", () => { respStep = "excluir"; renderRespStep(); });
     document.getElementById("goResetPin").addEventListener("click", () => {
       closeRespHub();
       alert("Fluxo da história 3.6 (recuperação de PIN): autenticação do responsável → escolher o avatar → definir novo PIN. Pode ser plugado aqui do mesmo jeito que o cadastro, com uma função RPC própria (ex.: redefinir_pin).");
@@ -469,6 +477,156 @@ function renderRespStep(){
     document.getElementById("respDone").addEventListener("click", closeRespHub);
     return;
   }
+
+  if(respStep === "excluir"){
+    renderDeleteStep();
+    return;
+  }
+
+  if(respStep === "excluido"){
+    respEyebrow.textContent = "Tudo pronto";
+    respTitle.textContent = "Avatar excluído";
+    respBody.innerHTML = `
+      <p style="font-weight:700; color:var(--ink-soft); margin:0 0 4px;">
+        O avatar <strong>${respData.avatar.nome}</strong> e todo o progresso dele foram apagados.
+        Ele voltou para a lista de avatares disponíveis.
+      </p>
+      <div class="step-actions">
+        <button type="button" class="btn primary" id="respDone">Voltar para a tela inicial</button>
+      </div>
+    `;
+    document.getElementById("respDone").addEventListener("click", closeRespHub);
+    return;
+  }
+}
+
+/*
+  Excluir avatar: o responsável escolhe o avatar, digita o PIN dele e
+  confirma. A função excluir_avatar (schema.sql) confere o PIN, apaga
+  progresso/sessões/consentimento e devolve o avatar para a lista de
+  disponíveis — a linha em si continua, porque os avatares são pré-definidos.
+*/
+function renderDeleteStep(){
+  respEyebrow.textContent = "Área do responsável";
+  respTitle.textContent = "Excluir um avatar";
+
+  if(AVATARS.length === 0){
+    respBody.innerHTML = `
+      <p style="font-weight:700; color:var(--ink-soft);">Não há nenhum avatar cadastrado para excluir.</p>
+      <div class="step-actions">
+        <button type="button" class="btn ghost" id="respBack">Voltar</button>
+      </div>
+    `;
+    document.getElementById("respBack").addEventListener("click", () => { respStep = 0; renderRespStep(); });
+    return;
+  }
+
+  respBody.innerHTML = `
+    <p style="font-weight:700; font-size:0.88rem; margin:0 0 8px;">Qual avatar você quer excluir?</p>
+    <div class="avatar-pick-grid" id="deletePickGrid"></div>
+    <div class="mini-keypad-wrap">
+      <p style="font-weight:700; font-size:0.88rem; margin:14px 0 8px;">Digite o PIN desse avatar</p>
+      <div class="pin-dots" id="deletePinDots">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      </div>
+      <div class="keypad" id="deleteKeypad"></div>
+    </div>
+    <label class="consent-check">
+      <input type="checkbox" id="deleteConfirm">
+      <span>Entendo que o progresso (fases e estrelas) desse avatar será apagado para sempre.</span>
+    </label>
+    <p class="pin-feedback error" id="respFeedback" role="status" aria-live="polite"></p>
+    <div class="step-actions">
+      <button type="button" class="btn ghost" id="respBack">Voltar</button>
+      <button type="button" class="btn danger" id="respNext" disabled>Excluir avatar</button>
+    </div>
+  `;
+
+  const pickGrid = document.getElementById("deletePickGrid");
+  const dots = document.getElementById("deletePinDots");
+  const confirmBox = document.getElementById("deleteConfirm");
+  const feedback = document.getElementById("respFeedback");
+  const nextBtn = document.getElementById("respNext");
+
+  AVATARS.forEach(av => {
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "avatar-pick";
+    pick.innerHTML = `
+      <div class="avatar-face" style="background:#fff">${faceSVG(av.tipo, av.cor, av.accent)}</div>
+      <span>${av.nome}</span>
+    `;
+    pick.addEventListener("click", () => {
+      respData.avatar = av;
+      [...pickGrid.children].forEach(c => c.classList.remove("selected"));
+      pick.classList.add("selected");
+      checkReady();
+    });
+    pickGrid.appendChild(pick);
+  });
+
+  const keypadEl = document.getElementById("deleteKeypad");
+  ["1","2","3","4","5","6","7","8","9","del","0"].forEach(k => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    if(k === "del"){
+      btn.className = "key action";
+      btn.setAttribute("aria-label","Apagar número");
+      btn.textContent = "⌫";
+      btn.addEventListener("click", () => setPin(respData.pin.slice(0,-1)));
+    } else {
+      btn.className = "key";
+      btn.textContent = k;
+      btn.addEventListener("click", () => setPin(respData.pin + k));
+    }
+    keypadEl.appendChild(btn);
+  });
+
+  function setPin(next){
+    respData.pin = next.slice(0, MAX_PIN_LENGTH);
+    dots.querySelectorAll(".dot").forEach((d,i) => d.classList.toggle("filled", i < respData.pin.length));
+    feedback.textContent = "";
+    checkReady();
+  }
+
+  function checkReady(){
+    nextBtn.disabled = !(respData.avatar && respData.pin.length === MAX_PIN_LENGTH && confirmBox.checked);
+  }
+  confirmBox.addEventListener("change", checkReady);
+
+  document.getElementById("respBack").addEventListener("click", () => {
+    respData.avatar = null;
+    respData.pin = "";
+    respStep = 0;
+    renderRespStep();
+  });
+
+  nextBtn.addEventListener("click", async () => {
+    nextBtn.disabled = true;
+    feedback.textContent = "Excluindo...";
+
+    const { data: ok, error } = await supabase.rpc("excluir_avatar", {
+      p_avatar_id: respData.avatar.id,
+      p_pin: respData.pin
+    });
+
+    if(error){
+      console.error("Erro ao excluir avatar:", error);
+      feedback.textContent = "Não deu pra excluir agora — tenta de novo em instantes.";
+      checkReady();
+      return;
+    }
+    if(!ok){
+      setPin(""); // setPin limpa o feedback, então a mensagem vem depois
+      feedback.textContent = "PIN incorreto para esse avatar.";
+      return;
+    }
+
+    await Promise.all([carregarAvataresAtivos(), carregarAvataresDisponiveis()]);
+    respData.pin = "";
+    respStep = "excluido";
+    renderRespStep();
+  });
 }
 
 async function finishRegistration(){

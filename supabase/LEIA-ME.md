@@ -66,6 +66,65 @@ Se você já rodou a versão anterior do `schema.sql`, é só rodar o arquivo
 inteiro de novo no SQL Editor — tudo usa `create ... if not exists` e
 `create or replace function`, então re-executar é seguro.
 
+## Épico 3 — conteúdo pedagógico e fases
+
+O `schema.sql` agora também cria o **conteúdo do jogo** no banco. Antes, as 13
+fases viviam em `js/fases.js` e as contas eram sorteadas no navegador; agora o
+Supabase é a fonte e o gerador local virou plano B.
+
+- **`fases`** — a trilha: nome, ícone, cor, dificuldade, metas de estrela e o
+  campo **`ordem`** (1..13, único e **sem furos**), que é quem define a cadeia
+  de liberação.
+- **`problemas`** — o acervo de contas de cada fase, com `dados` (jsonb, o
+  mesmo formato para as 4 operações), `resposta_correta`, `enunciado`
+  contextualizado e `elementos_visuais` (a ilustração).
+- **`contextos`** — 34 temas do dia a dia (frutas, figurinhas, festa, lanche…)
+  com modelos de frase usando `{a}` e `{b}`.
+
+Estas três tabelas têm **RLS com policy de leitura pública** (`select` liberado
+para `anon`), porque são conteúdo educativo sem nenhum dado pessoal. Escrita
+continua só pelo SQL Editor. As tabelas antigas seguem como antes: RLS ligado
+**sem** policy, acessíveis só pelas funções.
+
+`select semear_problemas();` roda no fim do script e popula as 13 fases com
+cerca de `qtd_questoes × 3` contas cada, já com historinha e ilustração. Rodar
+de novo é seguro: só completa o que falta.
+
+Novas funções RPC (todas `security definer`, `grant execute ... to anon`):
+
+| função | usada em | o que faz |
+|---|---|---|
+| `listar_fases()` | catálogo público | lista as fases ativas por `ordem`, sem precisar de token |
+| `obter_fase(fase_id)` | `js/conteudo.js` | devolve a fase + todos os problemas dela num `jsonb` |
+| `listar_fases_progresso(token)` | `js/jogar.js` | a trilha com o **status** de cada fase: `bloqueada` / `liberada` / `concluida` |
+| `sortear_problemas(fase_id, qtd, excluir[])` | `js/partida.js` | monta a rodada: dificuldade crescente, sem repetir problema e sem duas operações iguais seguidas |
+| `fase_liberada(token, fase_id)` | conferência | se aquele avatar pode entrar naquela fase |
+
+`fase_liberada_para(avatar, fase_id)` e `semear_problemas()` são internas
+(sem grant para `anon`).
+
+**Mudança importante em `salvar_resultado_fase`:** ela agora recusa gravar
+progresso de fase bloqueada (`raise exception 'Fase bloqueada'`). A regra de
+progressão passou a valer no back-end, não só no front — pular o menu do jogo
+não libera mais nada. Todo o resto da função continua igual (mesmas validações,
+mesmo `greatest(...)` no `on conflict`). Fase que não está na tabela `fases`
+não é bloqueada, para quem rodou só o schema antigo continuar jogando.
+
+**Se o banco já tem uma tabela `fases` antiga** (rascunho com `id` uuid, só
+`ordem/nome/icone`): o script a renomeia para `fases_legado` — sem apagar
+nada — e cria a `fases` nova com `id` inteiro, que é o que casa com
+`progresso.fase`. Depois de conferir que nada usa a antiga (ex.: a função
+`listar_fases_avatar`), dá pra apagar com `drop table fases_legado;`.
+
+**Correção em `salvar_resultado_fase`:** o `on conflict (avatar_id, fase)`
+dava erro de coluna ambígua (`fase` também é coluna de retorno), então o
+progresso **nunca** era gravado no servidor — só no espelho local. Agora usa
+`on conflict on constraint progresso_pkey`. Sem essa correção a fase 2 nunca
+liberaria pelo servidor.
+
+Como cadastrar conteúdo novo (fase, problema ou tema) está em
+[CONTEUDO.md](CONTEUDO.md).
+
 ## O que ainda falta (fora do escopo)
 - História 3.6 (recuperar PIN esquecido) — hoje só mostra um `alert()`.
   Dá pra plugar com uma função `redefinir_pin(...)` no mesmo padrão das

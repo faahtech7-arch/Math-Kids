@@ -126,6 +126,121 @@ As outras mensagens seguem o mesmo tom:
 
 ---
 
+## 📚 Épico 3 — Conteúdo pedagógico e gestão de fases
+
+Até aqui o jogo carregava as fases de um arquivo JavaScript e sorteava as
+contas no próprio navegador. O Épico 3 inverte isso: **o conteúdo mora no
+Supabase**. Quem escreve matemática (o time pedagógico) passa a trabalhar no
+banco, e quem escreve código não precisa ser chamado para cada conta nova.
+
+O gerador local não foi jogado fora — ele virou o **plano B**. Se o banco não
+responder, [js/conteudo.js](js/conteudo.js) cai em `fases.js` + `gerador.js` e
+a criança não percebe diferença nenhuma.
+
+### 1. A API de fases e questões
+
+Três tabelas novas em [supabase/schema.sql](supabase/schema.sql):
+
+| Tabela | Guarda | Destaque |
+|---|---|---|
+| `fases` | a trilha (nome, ícone, cor, metas) | `ordem` única e **sem furos** — é ela que encadeia a liberação |
+| `problemas` | o acervo de contas de cada fase | `dados` em jsonb: **um formato só** para `+`, `−`, `×` e `÷` |
+| `contextos` | 34 temas do dia a dia | modelos de frase com `{a}` e `{b}` |
+
+O segredo do "schema genérico" é o campo `dados`:
+
+```json
+{ "partes": [14, "+", 8], "operandos": [14, 8],
+  "operadores": ["+"], "expressao": "14 + 8 =" }
+```
+
+`partes` intercala número e operador, então `[3,"+",5,"-",2]` descreve um trio
+com a mesma estrutura de `[14,"+",8]`. Uma operação nova entraria sem alterar
+nenhuma coluna. E `partes` é o mesmo formato que [js/dicas.js](js/dicas.js) já
+consumia — por isso as dicas educativas do Épico 2 continuam funcionando com
+contas vindas do banco.
+
+Quatro RPCs servem esse conteúdo: `listar_fases()`, `obter_fase(fase_id)`,
+`listar_fases_progresso(token)` e `sortear_problemas(fase_id, qtd, excluir[])`.
+As tabelas têm **RLS com leitura pública** — conteúdo educativo não tem dado
+pessoal, e o que protege é não haver policy de escrita.
+
+**Cadastrar uma conta nova não exige deploy.** Um `insert` no SQL Editor já
+aparece na próxima partida, porque o front busca o conteúdo a cada fase.
+O passo a passo está em [supabase/CONTEUDO.md](supabase/CONTEUDO.md).
+
+**Dado torto nunca quebra a tela.** `normalizarProblema()` confere cada linha
+que chega — inclusive **refazendo a conta** para ver se `resposta_correta`
+bate — e descarta o que não passar, completando a rodada com o gerador local.
+Fase sem nenhum problema cadastrado também funciona: vira 100% local.
+
+### 2. Progressão sequencial validada no servidor
+
+Antes, quem decidia se a fase estava liberada era o navegador. Agora a regra
+vive no Postgres:
+
+- a fase de `ordem = 1` está sempre aberta;
+- a de `ordem = N+1` abre quando a de `ordem = N` foi **concluída** (≥ 1 estrela);
+- `listar_fases_progresso` devolve o `status` de cada fase já calculado:
+  `bloqueada`, `liberada` ou `concluida`;
+- **`salvar_resultado_fase` recusa** gravar numa fase bloqueada
+  (`raise exception 'Fase bloqueada'`).
+
+Esse último item é a diferença que importa: abrir `partida.html?fase=9` na mão,
+pulando o menu, não adianta mais — a partida até roda, mas o servidor não
+registra o resultado. O bloqueio no front ([js/jogar.js](js/jogar.js) monta
+fase bloqueada como `<div>` sem `href` e sem `tabIndex`) passou a ser
+redundância de usabilidade, não a trava de verdade.
+
+O cartão de cada fase mostra o status em texto (`Concluída ✔` / `Liberada` /
+`Bloqueada 🔒`), e a fase bloqueada diz no `aria-label` **qual** fase precisa
+ser concluída antes. Ao voltar da partida, o menu refaz a consulta no evento
+`pageshow` — a fase recém-liberada aparece aberta na hora, sem recarregar.
+
+### 3. Problemas adequados à idade
+
+Cada problema tem uma **historinha do dia a dia** e uma **ilustração**:
+
+> 🍎 *Ana colheu 14 maçãs no sítio e ganhou mais 8 da vovó. Com quantas maçãs
+> ela ficou?*
+>
+> **14 + 8 =**
+
+O enunciado dá sentido à conta; a conta continua embaixo, porque é ela que a
+criança resolve. Os textos saem de `contextos` — 34 temas concretos (frutas,
+figurinhas, brinquedos, festa, bichinhos, lanche, escola) distribuídos pelas
+quatro operações. Cada fase recebe cerca de `qtd_questoes × 3` problemas, o
+suficiente para três partidas sem ver a mesma conta.
+
+A ordem em que os problemas aparecem não é sorteio puro. `sortear_problemas()`
+no banco e `criarFonteDeProblemas()` no navegador garantem, juntos:
+
+| Regra | Por quê |
+|---|---|
+| dificuldade crescente dentro da rodada | a criança entra no ritmo antes de apertar |
+| nunca o mesmo problema duas vezes | decorar a resposta não é aprender |
+| nunca duas operações iguais seguidas | numa fase mista, alternar obriga a ler o sinal |
+| a rodada anterior entra em `p_excluir` | jogar de novo traz contas diferentes |
+| toda questão tem ilustração | sem emoji cadastrado, entra um padrão da operação |
+
+Se o acervo acabar no meio da rodada, a fonte completa com o gerador local em
+vez de repetir — a partida nunca fica mais curta.
+
+### Testes
+
+```bash
+node ferramentas/testar-conteudo.mjs   # 665 verificações da camada de conteúdo
+node ferramentas/testar-dicas.mjs      # 9280 dicas do Épico 2 (regressão)
+```
+
+O primeiro roda **sem rede**: como o Supabase é importado dinamicamente, em
+Node toda RPC falha de propósito e o que fica exercitado é justamente o
+caminho de fallback. Ele confere as 4 operações, 14 formatos de dado
+malformado, a não-repetição, o top-up local e que as 13 fases continuam
+jogáveis offline.
+
+---
+
 ## 🏆 Pontuação, estrelas e progressão
 
 **Pontos por acerto** (`pontosDoAcerto()`):
@@ -143,9 +258,12 @@ base    = 100 (de primeira) | 60 (2ª tentativa) | 30 (3ª) | 20
 | Fases 1–10 | 60% | 80% | 100% |
 | Fases extras | 60% | 80% | 90% |
 
-**Liberação** (`faseLiberada()` em [js/fases.js](js/fases.js)): a fase 1 está sempre
-aberta; a fase N+1 abre quando a fase N tem **≥ 1 estrela**; as extras abrem quando a
-fase 10 tem ≥ 1 estrela. São 13 fases × 3 = **39 estrelas** no total.
+**Liberação**: a fase 1 está sempre aberta e a fase N+1 abre quando a fase N tem
+**≥ 1 estrela**. Desde o Épico 3 quem aplica essa regra é o **Postgres**
+(`fase_liberada_para`, e `salvar_resultado_fase` recusa fase bloqueada);
+`faseLiberada()` em [js/fases.js](js/fases.js) só vale no modo offline.
+São 13 fases × 3 = **39 estrelas** — número que agora vem da contagem de fases
+cadastradas, não de uma constante no código.
 
 O progresso guarda sempre o **melhor** desempenho de cada fase — repetir uma fase
 nunca piora o recorde.
@@ -175,8 +293,11 @@ mantendo o melhor de cada campo.
 
 ## 🧩 Fases e geração das contas
 
-[js/fases.js](js/fases.js) descreve só os **parâmetros de dificuldade**;
-[js/gerador.js](js/gerador.js) monta as contas garantindo:
+Desde o Épico 3 a fonte das contas é o **Supabase** (tabela `problemas`), e
+[js/fases.js](js/fases.js) + [js/gerador.js](js/gerador.js) viraram o **plano
+B** para quando o banco não responde. As garantias valem nos dois caminhos — o
+gerador local as aplica na hora; o banco as impõe por `check` e pelo validador
+de [js/conteudo.js](js/conteudo.js), que refaz a conta antes de aceitar:
 
 - subtração **nunca** negativa;
 - divisão **sempre** exata (resto 0);
@@ -184,7 +305,9 @@ mantendo o melhor de cada campo.
 - sem conta repetida dentro da mesma fase.
 
 São 10 fases iniciais (`id: 1..10`, de "Primeiras somas" ao "Desafio final") mais 3
-extras (`id: 101..103`), duas delas cronometradas (10 s e 12 s por conta).
+extras (`id: 101..103`), duas delas cronometradas (10 s e 12 s por conta). As
+mesmas 13 estão semeadas na tabela `fases` com `ordem` 1..13 — cadastrar a 14ª
+no banco a faz aparecer no mapa sem tocar em código.
 
 ---
 
@@ -212,7 +335,8 @@ math-kids/
 │   ├── script.js                          tela inicial (avatares, PIN, cadastro)
 │   ├── jogar.js                           mapa de fases
 │   ├── partida.js                         loop de uma partida
-│   ├── fases.js / gerador.js              definição das fases e geração das contas
+│   ├── conteudo.js                        fases e problemas do banco (+ fallback)
+│   ├── fases.js / gerador.js              plano B: fases e contas feitas no navegador
 │   ├── dicas.js                           dicas educativas geradas a partir da conta
 │   ├── creditos.js                        time do projeto + tela de créditos
 │   ├── avatares.js                        SVGs dos rostos dos avatares
@@ -225,8 +349,11 @@ math-kids/
 │   └── (logo da universidade — ver img/LEIA-ME.md)
 ├── supabase/
 │   ├── schema.sql                         tabelas + funções RPC (rodar no SQL Editor)
+│   ├── CONTEUDO.md                        como cadastrar fases/problemas novos
 │   └── LEIA-ME.md                         passo a passo da integração
-├── ferramentas/                           scripts de treino (Python) — NÃO vão pro deploy
+├── ferramentas/                           treino do modelo + testes — NÃO vão pro deploy
+│   ├── testar-conteudo.mjs                camada de conteúdo (Épico 3)
+│   └── testar-dicas.mjs                   dicas educativas (Épico 2)
 ├── vercel.json                            headers de cache
 └── .vercelignore                          o que fica de fora do deploy
 ```
@@ -269,7 +396,9 @@ a proteção real é o RLS sem policies + os `grant execute` restritos do `schem
 
 **RPCs liberadas para o `anon`:** `listar_avatares_ativos`,
 `listar_avatares_disponiveis`, `login_avatar`, `cadastrar_responsavel`,
-`iniciar_sessao`, `carregar_progresso`, `salvar_resultado_fase`, `encerrar_sessao`.
+`iniciar_sessao`, `carregar_progresso`, `salvar_resultado_fase`, `encerrar_sessao`
+e, do Épico 3, `listar_fases`, `obter_fase`, `listar_fases_progresso`,
+`sortear_problemas`, `fase_liberada`.
 
 ---
 

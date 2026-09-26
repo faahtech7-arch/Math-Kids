@@ -18,20 +18,29 @@
 
   Ao terminar todas as questões, calcula estrelas e salva via
   salvar_resultado_fase (js/progresso.js).
+
+  Épico 3: as contas não nascem mais aqui. Quem entrega a fase e a lista de
+  problemas é js/conteudo.js, que busca no Supabase e só cai no gerador
+  local se o banco não responder. Cada problema pode vir com uma historinha
+  do dia a dia (`enunciado`) e uma ilustração (`visual.emoji`), mostradas
+  acima da conta.
   =========================================================================
 */
 import { exigirSessao, limparSessao } from "./sessao.js";
-import { carregarProgresso, salvarResultado } from "./progresso.js";
-import { acharFase, faseLiberada, TODAS_FASES } from "./fases.js";
-import { criarGeradorDeFase } from "./gerador.js";
+import { salvarResultado } from "./progresso.js";
+import {
+  carregarConteudoDaFase,
+  criarFonteDeProblemas,
+  lembrarServidos,
+  ultimosServidos,
+  listarFasesComStatus,
+} from "./conteudo.js";
 import { criarReconhecedor } from "./reconhecimento.js";
 import { dicaDeErro } from "./dicas.js";
 
 const sessao = exigirSessao();
 
 const faseId = Number(new URLSearchParams(location.search).get("fase"));
-const fase = acharFase(faseId);
-if (!fase) location.replace("jogar.html");
 
 const $ = (id) => document.getElementById(id);
 const carregando = $("carregando");
@@ -44,17 +53,44 @@ function erroFatal(msg) {
   throw new Error(msg);
 }
 
-/* ---- pré-condições: sessão válida + fase liberada + modelo carregado ---- */
-let progresso = {};
-try {
-  progresso = await carregarProgresso(sessao.token);
-} catch (e) {
-  if (String(e.message || "").includes("Sessão")) {
-    await limparSessao();
-    location.replace("index.html");
-  }
+/* Sai da página sem deixar o resto do módulo rodar com dado pela metade.
+   `location.replace` só agenda a navegação — sem o throw, o código abaixo
+   continuaria executando contra uma fase inexistente. */
+function sairPara(url) {
+  location.replace(url);
+  throw new Error("Saindo da partida: " + url);
 }
-if (!faseLiberada(faseId, progresso)) location.replace("jogar.html");
+
+/* ---- pré-condições: sessão + conteúdo da fase + modelo carregado ---- */
+$("carregandoTexto").textContent = "Buscando os problemas...";
+
+/* A trilha inteira serve para descobrir qual é a próxima fase pela `ordem`
+   do banco (e não por um "faseId + 1" chutado no front). */
+const [conteudo, trilha] = await Promise.all([
+  carregarConteudoDaFase(faseId, {
+    token: sessao.token,
+    excluir: ultimosServidos(faseId), // não repete os problemas da rodada passada
+  }),
+  listarFasesComStatus(sessao.token),
+]);
+
+if (conteudo.erro && String(conteudo.erro).includes("Sessão")) {
+  await limparSessao();
+  sairPara("index.html");
+}
+
+const fase = conteudo.fase;
+if (!fase) sairPara("jogar.html");
+
+/* Redundância do bloqueio: o servidor já recusa salvar progresso de fase
+   bloqueada (história 5.2), mas não faz sentido deixar a criança jogar uma
+   partida inteira que não vai contar. */
+if (fase.status === "bloqueada") sairPara("jogar.html");
+
+if (conteudo.erro) console.warn("Conteúdo: usando gerador local.", conteudo.erro);
+conteudo.avisos.forEach((a) => console.warn("Conteúdo:", a));
+
+$("carregandoTexto").textContent = "Preparando os desafios...";
 
 let rec;
 try {
@@ -66,7 +102,10 @@ try {
 carregando.classList.add("some");
 
 /* ---- estado ---- */
-const gerar = criarGeradorDeFase(fase);
+/* A fonte decide a ORDEM em que a criança vê os problemas: sem repetir
+   problema, sem duas operações iguais seguidas e completando com o gerador
+   local se o acervo do banco acabar (história 5.3). */
+const fonte = criarFonteDeProblemas(fase, conteudo.problemas);
 const totalQ = fase.qtdQuestoes;
 let qIndex = 0;
 let pontos = 0;
@@ -318,13 +357,32 @@ function estourouTempo() {
   setTimeout(proximaQuestao, 1500);
 }
 
+/* ---- contexto da questão (história 5.3) ----
+   Problema do banco vem com uma historinha do dia a dia e uma ilustração.
+   Problema do gerador local não tem enunciado — aí a faixa some inteira,
+   em vez de aparecer vazia. */
+function mostrarContexto(q) {
+  const caixa = $("contexto");
+  const texto = (q.enunciado || "").trim();
+  if (!texto) {
+    caixa.hidden = true;
+    $("enunciado").textContent = "";
+    $("ilustracao").textContent = "";
+    return;
+  }
+  $("enunciado").textContent = texto;
+  $("ilustracao").textContent = q.visual?.emoji || "";
+  caixa.hidden = false;
+}
+
 /* ---- ciclo de questões ---- */
 function carregarQuestao() {
-  questao = gerar();
+  questao = fonte.proxima();
   valores = Array(questao.slots).fill("");
   slotAtivo = 0;
   tentativasRestantes = fase.tentativas;
   setTravado(false);
+  mostrarContexto(questao);
   $("conta").textContent = questao.texto;
   montarSlots(questao.slots);
   atualizarVidas();
@@ -428,12 +486,15 @@ function calcularEstrelas() {
   return 0;
 }
 
+/* A próxima fase é a seguinte na `ordem` do banco — cadastrar uma fase nova
+   no Supabase entra na trilha sozinha, sem mexer aqui. Só se a trilha não
+   veio é que caímos no "id + 1" de antes. */
 function proximaFaseId() {
-  if (faseId < 10) return faseId + 1;
-  const extras = TODAS_FASES.filter((f) => f.extra).map((f) => f.id);
-  if (faseId === 10) return extras[0] ?? null;
-  const i = extras.indexOf(faseId);
-  return i >= 0 && i < extras.length - 1 ? extras[i + 1] : null;
+  const lista = (trilha.fases || []).slice().sort((a, b) => a.ordem - b.ordem);
+  const i = lista.findIndex((f) => f.id === faseId);
+  if (i >= 0 && i < lista.length - 1) return lista[i + 1].id;
+  if (i >= 0) return null; // era a última da trilha
+  return faseId < 10 ? faseId + 1 : null;
 }
 
 async function finalizarFase() {
@@ -452,8 +513,12 @@ async function finalizarFase() {
     <div class="box"><b>${comboMax}</b>melhor combo</div>
   `;
 
-  const anterior = progresso[faseId];
-  const recorde = !anterior || pontos > anterior.melhor_pontos;
+  /* Guarda os problemas que a criança acabou de ver: na próxima vez que ela
+     jogar esta fase, eles entram em `p_excluir` e o banco sorteia outros
+     (história 5.3 — não-repetição imediata). */
+  lembrarServidos(faseId, fonte.servidos());
+
+  const recorde = pontos > (fase.melhor_pontos || 0);
 
   const acoes = $("fimAcoes");
   acoes.innerHTML = "";

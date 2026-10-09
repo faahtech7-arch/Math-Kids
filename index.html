@@ -31,6 +31,7 @@
 
   <div class="helper-row">
     <button type="button" id="openRespHub">Área do responsável</button>
+    <button type="button" id="openCreditos">Créditos</button>
   </div>
 </main>
 
@@ -79,6 +80,32 @@
     <div class="step-progress" id="respProgress"></div>
 
     <div id="respStepBody"><!-- gerado via JS conforme o passo atual --></div>
+  </div>
+</div>
+
+<!-- Créditos do time (Épico 5). Conteúdo gerado em js/creditos.js. -->
+<div class="overlay" id="creditosOverlay" aria-hidden="true">
+  <div class="pin-sheet cred-sheet" role="dialog" aria-modal="true" aria-labelledby="creditosTitulo">
+    <div class="pin-sheet-header">
+      <div class="who">
+        <p class="step-eyebrow">Quem fez este jogo</p>
+        <h2 class="step-title" id="creditosTitulo" tabindex="-1">Créditos</h2>
+      </div>
+      <button class="close-btn" id="closeCreditosBtn" aria-label="Fechar">✕</button>
+    </div>
+
+    <div id="creditosCorpo"><!-- gerado via JS --></div>
+
+    <!-- A logo aparece só depois de carregar (js/creditos.js procura em img/).
+         Sem o arquivo, fica o texto — nada de imagem quebrada na tela. -->
+    <div class="cred-instituicao">
+      <img id="credLogo" class="cred-logo" alt="Universidade Cruzeiro do Sul" hidden>
+      <p class="cred-inst-linha" id="credInstFallback">
+        <span class="cred-estrela">✦</span>
+        Projeto acadêmico — <b>Universidade Cruzeiro do Sul</b>
+      </p>
+      <p class="cred-inst-linha" id="credInstLegenda" hidden>Projeto acadêmico</p>
+    </div>
   </div>
 </div>
 

@@ -1,0 +1,419 @@
+/*
+  =========================================================================
+  Math Kids — Épico 4: progresso, pontuação e recompensas
+  Medalhas, Galeria de Conquistas e o painel "Meu progresso".
+  Reaproveita as variáveis e o visual "quadrinho" de css/style.css e é
+  carregado depois de css/jogo.css pelas três telas do jogo.
+  =========================================================================
+*/
+
+/* ---------- Medalha (história 6.2) ----------
+   O desenho vem de medalhaSVG() em js/recompensas.js; aqui só o tamanho. */
+.medalha{ display:inline-flex; width:44px; height:44px; flex:0 0 auto; }
+.medalha svg{ width:100%; height:100%; display:block; overflow:visible; }
+.medalha.pequena{ width:30px; height:30px; }
+.medalha.grande{ width:96px; height:96px; }
+
+/* ---------- Barra de progresso do painel ----------
+   Mesma cara da barra da partida, só que mais alta e com rótulo ao lado. */
+.barra-grande{
+  height:22px; border:var(--border-w) solid var(--ink); border-radius:999px;
+  background:#fff; overflow:hidden; box-shadow:var(--card-shadow-sm);
+}
+.barra-grande i{
+  display:block; height:100%; width:0; background:var(--mint); border-radius:999px;
+  transition:width .9s cubic-bezier(.2,.8,.2,1);
+}
+.barra-grande.estrelas i{ background:var(--sun); }
+.barra-grande.pontos i{ background:#FF9A3D; }
+.mini-barra{
+  height:10px; border:2px solid var(--ink); border-radius:999px; background:#fff;
+  overflow:hidden; width:100%;
+}
+.mini-barra i{ display:block; height:100%; width:0; background:var(--sun); }
+
+/* =========================================================================
+   Menu de fases: atalhos e medalha no cartão
+   ========================================================================= */
+
+.atalhos{
+  width:100%; max-width:860px; display:grid; grid-template-columns:1fr 1fr; gap:14px;
+  margin-bottom:22px; position:relative; z-index:1;
+}
+.atalho{
+  position:relative; display:flex; align-items:center; gap:12px; min-height:60px;
+  background:var(--card); border:var(--border-w) solid var(--ink);
+  border-radius:var(--radius-lg); box-shadow:var(--card-shadow);
+  padding:10px 14px; cursor:pointer; text-align:left; text-decoration:none;
+  color:var(--ink); font-family:var(--body);
+  transition:transform .14s ease, box-shadow .14s ease;
+  -webkit-tap-highlight-color:transparent;
+}
+.atalho:hover{ transform:translate(-3px,-3px); box-shadow:9px 9px 0 var(--ink); }
+.atalho:active{ transform:translate(2px,2px); box-shadow:2px 2px 0 var(--ink); }
+.atalho:focus-visible{ outline:3px solid var(--sun); outline-offset:3px; }
+.atalho-icone{
+  width:44px; height:44px; border-radius:50%; border:3px solid var(--ink); flex:0 0 auto;
+  display:flex; align-items:center; justify-content:center; font-size:1.4rem; background:var(--sun);
+}
+.atalho.conquistas .atalho-icone{ background:var(--mint); }
+.atalho-texto{ display:flex; flex-direction:column; min-width:0; }
+.atalho-texto b{ font-family:var(--display); font-weight:400; font-size:1.02rem; letter-spacing:.3px; line-height:1.15; }
+.atalho-texto small{
+  font-size:.74rem; font-weight:800; color:var(--ink-soft);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.selo-nova{
+  font-family:var(--body); font-size:.62rem; font-weight:900; letter-spacing:.4px;
+  background:var(--coral); color:#fff; border:2px solid var(--ink); border-radius:999px;
+  padding:2px 8px; line-height:1.4; white-space:nowrap; transform:rotate(6deg);
+}
+.selo-nova[hidden]{ display:none; }
+.atalho .selo-nova{ position:absolute; top:-10px; right:-6px; animation:seloPulsa 1.4s ease-in-out infinite; }
+@keyframes seloPulsa{ 0%,100%{ transform:rotate(6deg) scale(1); } 50%{ transform:rotate(6deg) scale(1.12); } }
+
+@media (max-width:460px){
+  .atalhos{ gap:10px; }
+  .atalho{ padding:8px 10px; gap:8px; }
+  .atalho-icone{ width:38px; height:38px; font-size:1.2rem; }
+  .atalho-texto b{ font-size:.9rem; }
+  .atalho-texto small{ display:none; }
+}
+
+/* Medalha da fase: um selo no canto do emoji do cartão. */
+.fase-card .emoji{ position:relative; }
+.fase-card .medalha-selo{
+  position:absolute; right:-12px; bottom:-10px; width:30px; height:30px;
+  filter:drop-shadow(2px 2px 0 rgba(20,20,26,.25));
+}
+
+/* =========================================================================
+   Partida: placar que cresce, medalha e conquistas na tela de fim
+   ========================================================================= */
+
+/* Botão da galeria no topo: mesmo molde do botão de voltar, com 44px de alvo. */
+.hud .btn-trofeu{
+  border:3px solid var(--ink); background:var(--sun); border-radius:999px;
+  width:44px; height:44px; flex:0 0 auto; font-size:1.15rem; line-height:1;
+  cursor:pointer; box-shadow:var(--card-shadow-sm); padding:0;
+}
+.hud .btn-trofeu:active{ transform:translate(2px,2px); box-shadow:0 0 0 var(--ink); }
+.hud .btn-trofeu:focus-visible{ outline:3px solid var(--sun); outline-offset:3px; }
+
+/* História 6.1 — "incrementar visualmente a cada acerto": o chip dá um
+   pulo e o ganho sobe flutuando. Ao errar nada disto acontece, porque o
+   placar não muda. */
+.chip.pontos{ position:relative; }
+.chip.pontos.ganhou{ animation:slotPop .45s ease; }
+.ganho-flutuante{
+  position:absolute; left:50%; top:-6px; transform:translate(-50%,0);
+  font-family:var(--display); font-size:1.05rem; color:var(--mint-dark);
+  -webkit-text-stroke:1px #fff; pointer-events:none; white-space:nowrap;
+  animation:ganhoSobe .9s ease-out forwards;
+}
+@keyframes ganhoSobe{
+  0%{ opacity:0; transform:translate(-50%,6px) scale(.7); }
+  20%{ opacity:1; transform:translate(-50%,-10px) scale(1.15); }
+  100%{ opacity:0; transform:translate(-50%,-38px) scale(1); }
+}
+
+/* A tela de fim ganhou medalha e conquistas: em celular baixo o cartão
+   passa a rolar por dentro, em vez de cortar os botões. */
+.fim-overlay{ align-items:flex-start; overflow-y:auto; }
+.fim-cartao{ margin:auto; }
+
+.fim-medalha{
+  display:flex; align-items:center; justify-content:center; gap:14px;
+  background:var(--paper); border:3px solid var(--ink); border-radius:var(--radius-md);
+  padding:10px 14px; margin:6px 0 14px; text-align:left;
+}
+.fim-medalha[hidden]{ display:none; }
+.fim-medalha .medalha{ width:76px; height:76px; }
+.fim-medalha.ganhou .medalha{ animation:medalhaChega .7s cubic-bezier(.2,1.4,.4,1) .35s backwards; }
+.fim-medalha.ganhou.ouro{ background:#FFF3B8; }
+.fim-medalha-texto{ min-width:0; }
+.fim-medalha-nome{ font-family:var(--display); font-size:1.15rem; margin:0; color:var(--ink); line-height:1.15; }
+.fim-medalha-meta{ font-size:.82rem; font-weight:800; color:var(--ink-soft); margin:3px 0 0; line-height:1.3; }
+@keyframes medalhaChega{
+  0%{ transform:translateY(-46px) scale(.3) rotate(-30deg); opacity:0; }
+  60%{ transform:translateY(4px) scale(1.15) rotate(8deg); opacity:1; }
+  100%{ transform:translateY(0) scale(1) rotate(0); }
+}
+
+.fim-conquistas{ margin:0 0 16px; text-align:left; }
+.fim-conquistas[hidden]{ display:none; }
+.fim-conquistas-titulo{
+  font-family:var(--display); font-size:1rem; margin:0 0 8px; text-align:center; color:var(--ink);
+}
+.fim-conquistas ul{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+.fim-conquista{
+  display:flex; align-items:center; gap:10px; background:#fff;
+  border:3px solid var(--ink); border-radius:var(--radius-md); padding:8px 10px;
+  box-shadow:var(--card-shadow-sm); animation:conquistaEntra .5s cubic-bezier(.2,1.3,.4,1) backwards;
+}
+.fim-conquista:nth-child(2){ animation-delay:.15s; }
+.fim-conquista:nth-child(3){ animation-delay:.3s; }
+.fim-conquista:nth-child(n+4){ animation-delay:.45s; }
+.fim-conquista b{ display:block; font-family:var(--display); font-weight:400; font-size:.95rem; line-height:1.15; }
+.fim-conquista small{ display:block; font-size:.76rem; font-weight:700; color:var(--ink-soft); line-height:1.3; }
+@keyframes conquistaEntra{
+  0%{ transform:translateX(-24px) scale(.9); opacity:0; }
+  100%{ transform:translateX(0) scale(1); opacity:1; }
+}
+
+.fim-atalhos{ display:flex; gap:10px; margin-top:10px; }
+.fim-atalhos > *{
+  flex:1; min-height:44px; display:flex; align-items:center; justify-content:center; gap:6px;
+  border:3px solid var(--ink); border-radius:999px; background:var(--paper); color:var(--ink);
+  font-family:var(--display); font-size:.82rem; text-decoration:none; cursor:pointer;
+  box-shadow:3px 3px 0 var(--ink); padding:6px 8px;
+}
+.fim-atalhos > *:active{ transform:translate(2px,2px); box-shadow:0 0 0 var(--ink); }
+.fim-atalhos > *:focus-visible{ outline:3px solid var(--pop-blue); outline-offset:2px; }
+
+/* =========================================================================
+   Galeria de Conquistas (história 6.6)
+   ========================================================================= */
+
+/* Ícone redondo da conquista — usado na galeria e na tela de fim. */
+.conquista-icone{
+  position:relative; width:52px; height:52px; flex:0 0 auto; border-radius:50%;
+  border:3px solid var(--ink); display:flex; align-items:center; justify-content:center;
+  font-size:1.6rem; line-height:1; background:var(--sun);
+}
+.fim-conquista .conquista-icone{ width:44px; height:44px; font-size:1.35rem; }
+
+.galeria-grade{
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:14px;
+  list-style:none; margin:0; padding:0;
+}
+.conquista{
+  position:relative; background:var(--card); border:var(--border-w) solid var(--ink);
+  border-radius:var(--radius-lg); box-shadow:var(--card-shadow-sm);
+  padding:16px 10px 12px; display:flex; flex-direction:column; align-items:center; gap:6px;
+  text-align:center;
+}
+.conquista-nome{ font-family:var(--display); font-weight:400; font-size:.98rem; margin:2px 0 0; line-height:1.15; color:var(--ink); }
+.conquista-descricao{ font-size:.78rem; font-weight:700; color:var(--ink-soft); margin:0; line-height:1.3; }
+.conquista-estado{
+  font-size:.7rem; font-weight:900; letter-spacing:.2px; margin:auto 0 0; padding-top:4px;
+  color:var(--mint-dark); text-transform:uppercase;
+}
+.conquista .mini-barra{ margin-top:auto; }
+.conquista .mini-barra + .conquista-estado{ margin-top:0; }
+
+/* Não conquistada: continua legível (a descrição ensina como ganhar), só
+   perde a cor — e ganha um cadeado para não depender só do cinza. */
+.conquista.bloqueada{ background:#F1F1F5; box-shadow:3px 3px 0 var(--ink-soft); border-color:var(--ink-soft); }
+.conquista.bloqueada .conquista-icone{ background:#DADAE2 !important; border-color:var(--ink-soft); }
+.conquista.bloqueada .conquista-emoji{ filter:grayscale(1); opacity:.55; }
+.conquista.bloqueada .conquista-nome{ color:var(--ink-soft); }
+.conquista.bloqueada .conquista-estado{ color:var(--ink-soft); }
+.conquista-cadeado{
+  position:absolute; right:-8px; bottom:-6px; font-size:.95rem; line-height:1;
+  background:#fff; border:2px solid var(--ink-soft); border-radius:50%;
+  width:24px; height:24px; display:flex; align-items:center; justify-content:center;
+}
+
+/* Conquista recém-desbloqueada: selo + entrada com brilho. */
+.conquista .selo-nova{ position:absolute; top:-10px; right:-8px; }
+.conquista.nova{ animation:conquistaNova .9s cubic-bezier(.2,1.3,.4,1) backwards; border-color:var(--ink); }
+.conquista.nova .conquista-icone{ animation:brilhoNovo 1.6s ease-in-out .5s 2; }
+@keyframes conquistaNova{
+  0%{ transform:scale(.6) rotate(-6deg); opacity:0; }
+  60%{ transform:scale(1.08) rotate(2deg); opacity:1; }
+  100%{ transform:scale(1) rotate(0); }
+}
+@keyframes brilhoNovo{
+  0%,100%{ box-shadow:0 0 0 0 rgba(255,212,0,0); }
+  50%{ box-shadow:0 0 0 10px rgba(255,212,0,.55); }
+}
+
+/* A galeria como janela: cobre a tela INTEIRA com fundo cheio. De propósito
+   — aberta no meio de uma partida, ela pausa o cronômetro, e a conta não
+   pode ficar visível por trás enquanto o relógio está parado. */
+.galeria-tela{
+  position:fixed; inset:0; z-index:60; overflow-y:auto;
+  background-color:var(--pop-blue);
+  background-image:radial-gradient(rgba(255,255,255,.55) 2.5px, transparent 2.5px);
+  background-size:20px 20px;
+  padding:24px 20px 40px; display:flex; flex-direction:column; align-items:center;
+}
+.galeria-tela[hidden]{ display:none; }
+.galeria-janela{ width:100%; max-width:860px; }
+.galeria-topo{
+  display:flex; align-items:center; gap:12px; background:var(--card);
+  border:var(--border-w) solid var(--ink); border-radius:var(--radius-lg);
+  box-shadow:var(--card-shadow); padding:12px 16px; margin-bottom:18px;
+}
+.galeria-topo .galeria-trofeu{
+  width:48px; height:48px; border-radius:50%; border:3px solid var(--ink); background:var(--sun);
+  display:flex; align-items:center; justify-content:center; font-size:1.5rem; flex:0 0 auto;
+}
+.galeria-topo .quem{ flex:1; min-width:0; }
+.galeria-topo .quem p{ margin:0; font-weight:800; color:var(--ink-soft); font-size:.8rem; }
+.galeria-topo h2{ margin:0; font-family:var(--display); font-weight:400; font-size:1.25rem; color:var(--ink); letter-spacing:.3px; }
+.galeria-topo .close-btn{ width:44px; height:44px; flex:0 0 auto; }
+.galeria-aviso{
+  text-align:center; font-weight:800; color:#fff; margin:30px 0; font-size:1rem;
+  text-shadow:2px 2px 0 var(--ink);
+}
+.galeria-aviso[hidden]{ display:none; }
+.galeria-voltar{
+  display:block; margin:22px auto 0; min-height:48px; padding:12px 26px;
+  border:3px solid var(--ink); border-radius:var(--radius-md); background:var(--mint); color:#fff;
+  font-family:var(--display); font-size:1rem; cursor:pointer; box-shadow:4px 4px 0 var(--ink);
+}
+.galeria-voltar:active{ transform:translate(3px,3px); box-shadow:0 0 0 var(--ink); }
+.galeria-voltar:focus-visible{ outline:3px solid var(--sun); outline-offset:3px; }
+
+/* =========================================================================
+   Painel "Meu progresso" (histórias 6.5 e 6.7)
+   ========================================================================= */
+
+.jogo-topo .btn-voltar-mapa{
+  border:3px solid var(--ink); background:#fff; border-radius:999px; width:44px; height:44px;
+  flex:0 0 auto; display:flex; align-items:center; justify-content:center;
+  font-size:1.1rem; font-weight:800; color:var(--ink); text-decoration:none;
+  box-shadow:var(--card-shadow-sm);
+}
+.jogo-topo .btn-voltar-mapa:active{ transform:translate(2px,2px); box-shadow:0 0 0 var(--ink); }
+.jogo-topo .btn-voltar-mapa:focus-visible{ outline:3px solid var(--pop-blue); outline-offset:3px; }
+
+.painel{
+  width:100%; max-width:860px; position:relative; z-index:1;
+  display:grid; grid-template-columns:1fr; gap:22px;
+}
+/* `hidden` sozinho não vence o display:grid acima. O painel fica escondido
+   até os dados chegarem — é ao aparecer que as animações de entrada rodam. */
+.painel[hidden]{ display:none; }
+@media (min-width:760px){
+  .painel{ grid-template-columns:1fr 1fr; align-items:start; }
+  .painel .bloco-recompensas, .painel .painel-rodape{ grid-column:1 / -1; }
+}
+
+.bloco{
+  background:var(--card); border:var(--border-w) solid var(--ink);
+  border-radius:var(--radius-lg); box-shadow:var(--card-shadow); padding:18px 18px 20px;
+  animation:blocoEntra .55s cubic-bezier(.2,1.1,.4,1) backwards;
+}
+.bloco:nth-of-type(2){ animation-delay:.12s; }
+.bloco:nth-of-type(3){ animation-delay:.24s; }
+@keyframes blocoEntra{
+  0%{ transform:translateY(26px) scale(.97); opacity:0; }
+  100%{ transform:translateY(0) scale(1); opacity:1; }
+}
+.bloco-topo{ display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.bloco-icone{
+  width:48px; height:48px; border-radius:50%; border:3px solid var(--ink); flex:0 0 auto;
+  display:flex; align-items:center; justify-content:center; font-size:1.5rem; background:var(--sun);
+}
+.bloco-fases .bloco-icone{ background:#8EE6CE; }
+.bloco-recompensas .bloco-icone{ background:#FFB4A2; }
+.bloco h2{
+  margin:0; font-family:var(--display); font-weight:400; font-size:1.3rem; color:var(--ink);
+  letter-spacing:.3px; -webkit-text-stroke:0; text-shadow:none;
+}
+.bloco h3{
+  margin:20px 0 12px; font-family:var(--display); font-weight:400; font-size:1.05rem; color:var(--ink);
+  display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+}
+.bloco h3 span{ font-family:var(--body); font-weight:900; font-size:.82rem; color:var(--ink-soft); }
+.bloco-destaque{ margin:0 0 10px; font-weight:800; font-size:1rem; color:var(--ink-soft); }
+.bloco-destaque b{ font-family:var(--display); font-weight:400; font-size:1.7rem; color:var(--ink); }
+.bloco-recado{
+  margin:12px 0 0; font-weight:800; font-size:.9rem; color:var(--ink-soft);
+  background:var(--paper); border:2px dashed var(--ink-soft); border-radius:var(--radius-md);
+  padding:10px 12px; line-height:1.35;
+}
+.bloco-recado[hidden]{ display:none; }
+
+/* ---- Minhas fases: a trilha, uma bolinha por fase ---- */
+.trilha{
+  list-style:none; margin:16px 0 0; padding:0;
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(58px, 1fr)); gap:14px 8px;
+}
+.trilha-fase{ display:flex; flex-direction:column; align-items:center; gap:3px; }
+.trilha-bola{
+  position:relative; width:50px; height:50px; border-radius:50%; border:3px solid var(--ink);
+  display:flex; align-items:center; justify-content:center; font-size:1.4rem; line-height:1;
+  background:#fff;
+}
+.trilha-bola .medalha{ position:absolute; right:-11px; bottom:-9px; width:26px; height:26px; }
+.trilha-rotulo{ font-size:.66rem; font-weight:900; color:var(--ink-soft); letter-spacing:.2px; text-transform:uppercase; }
+.trilha-estrelas{ font-size:.7rem; letter-spacing:1px; line-height:1; min-height:.7rem; }
+.trilha-estrelas .off{ opacity:.25; }
+.trilha-fase.bloqueada .trilha-bola{ background:#DADAE2; border-color:var(--ink-soft); filter:grayscale(1); }
+.trilha-fase.atual .trilha-bola{ box-shadow:0 0 0 4px var(--sun), 0 0 0 7px var(--ink); animation:voceEstaAqui 1.6s ease-in-out infinite; }
+.trilha-fase.atual .trilha-rotulo{ color:var(--ink); }
+@keyframes voceEstaAqui{ 0%,100%{ transform:translateY(0); } 50%{ transform:translateY(-5px); } }
+
+.botao-continuar{
+  display:flex; align-items:center; justify-content:center; gap:8px; margin-top:18px;
+  min-height:52px; padding:12px 16px; text-decoration:none; text-align:center;
+  border:3px solid var(--ink); border-radius:var(--radius-md); background:var(--mint); color:#fff;
+  font-family:var(--display); font-size:1rem; box-shadow:4px 4px 0 var(--ink);
+  transition:transform .1s ease, box-shadow .1s ease;
+}
+.botao-continuar:active{ transform:translate(3px,3px); box-shadow:0 0 0 var(--ink); }
+.botao-continuar:focus-visible{ outline:3px solid var(--pop-blue); outline-offset:3px; }
+
+/* ---- Meus pontos: número grande + moedas ---- */
+.pontos-total{ margin:0; font-weight:800; font-size:1rem; color:var(--ink-soft); }
+.pontos-total b{ font-family:var(--display); font-weight:400; font-size:2.4rem; color:var(--ink); letter-spacing:.5px; }
+.moedas{ display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 4px; min-height:38px; }
+.moeda{
+  width:36px; height:36px; border-radius:50%; border:3px solid var(--ink);
+  background:radial-gradient(circle at 35% 30%, #FFF3A0 0 22%, var(--sun) 23% 100%);
+  box-shadow:inset 0 0 0 3px var(--sun-dark);
+  display:flex; align-items:center; justify-content:center;
+  font-size:.95rem; color:var(--ink); line-height:1;
+  animation:moedaCai .5s cubic-bezier(.2,1.4,.4,1) backwards;
+}
+.moeda.vazia{ background:#fff; box-shadow:none; border-style:dashed; border-color:var(--ink-soft); color:var(--ink-soft); animation:none; }
+.moeda.mais{ background:#fff; box-shadow:none; font-family:var(--display); font-size:.8rem; }
+@keyframes moedaCai{ 0%{ transform:translateY(-22px) scale(.4); opacity:0; } 100%{ transform:translateY(0) scale(1); opacity:1; } }
+.moedas-legenda{ margin:0 0 14px; font-size:.76rem; font-weight:800; color:var(--ink-soft); }
+
+.objetivo{ margin-top:14px; }
+.objetivo-titulo{ margin:0 0 6px; font-weight:800; font-size:.88rem; color:var(--ink); line-height:1.3; }
+.objetivo-titulo b{ font-family:var(--display); font-weight:400; }
+.objetivo-quanto{ margin:5px 0 0; font-weight:900; font-size:.78rem; color:var(--ink-soft); text-align:right; }
+
+/* ---- Minhas recompensas: o medalheiro ---- */
+.medalheiro{ display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }
+.medalheiro-item{
+  display:flex; flex-direction:column; align-items:center; gap:2px;
+  background:var(--paper); border:3px solid var(--ink); border-radius:var(--radius-md); padding:10px 6px;
+}
+.medalheiro-item .medalha{ width:58px; height:58px; }
+.medalheiro-item b{ font-family:var(--display); font-weight:400; font-size:1.5rem; line-height:1; color:var(--ink); }
+.medalheiro-item small{ font-size:.74rem; font-weight:900; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px; }
+.medalheiro-item.nenhuma{ background:#F1F1F5; border-color:var(--ink-soft); }
+.medalheiro-item.nenhuma .medalha{ filter:grayscale(1); opacity:.45; }
+.medalheiro-item.nenhuma b{ color:var(--ink-soft); }
+
+.painel-rodape{
+  margin:0; text-align:center; font-weight:800; font-size:.82rem; color:#fff;
+  text-shadow:2px 2px 0 var(--ink);
+}
+.painel-rodape[hidden]{ display:none; }
+
+@media (max-width:400px){
+  .bloco{ padding:14px 14px 16px; }
+  .pontos-total b{ font-size:2rem; }
+  .galeria-grade{ grid-template-columns:repeat(2, 1fr); gap:10px; }
+  .conquista{ padding:14px 8px 10px; }
+  .fim-medalha .medalha{ width:62px; height:62px; }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .atalho .selo-nova, .chip.pontos.ganhou,
+  .fim-medalha.ganhou .medalha, .fim-conquista,
+  .conquista.nova, .conquista.nova .conquista-icone,
+  .bloco, .moeda, .trilha-fase.atual .trilha-bola{ animation:none !important; }
+  /* o ganho flutuante só existe como movimento: sem animação ele some
+     (o "+N pontos" continua no aviso em texto, logo abaixo da lousa) */
+  .ganho-flutuante{ display:none; }
+  .barra-grande i{ transition:none; }
+}

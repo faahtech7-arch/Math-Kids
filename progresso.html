@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Math Kids — Meu progresso</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Baloo+2:wght@500;700;800&family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/jogo.css">
+<link rel="stylesheet" href="css/recompensas.css">
+</head>
+<body>
+
+<div class="cloud cloud1"></div>
+<div class="cloud cloud2"></div>
+
+<div class="carregando-tela" id="carregando">
+  <div class="bola"></div>
+  <p>Abrindo seu progresso...</p>
+</div>
+
+<div class="jogo-topo">
+  <a class="btn-voltar-mapa" href="jogar.html" aria-label="Voltar ao mapa de fases">←</a>
+  <div class="avatar-face" id="avatarFace"></div>
+  <div class="quem">
+    <p>Meu progresso</p>
+    <h1 id="avatarNome">—</h1>
+  </div>
+  <span class="placar-estrelas">⭐ <span id="totalEstrelas">0</span>/<span id="maxEstrelas">39</span></span>
+</div>
+
+<!-- Épico 4 (histórias 6.5 e 6.7): o painel da criança. Três blocos — fases,
+     pontos e recompensas — só com barra, moeda, estrela e medalha: nenhuma
+     tabela e nenhum gráfico técnico. Tudo é preenchido em js/painel.js com
+     UMA ida ao banco (painel_progresso). Fica `hidden` até os dados
+     chegarem, e é ao aparecer que as animações de entrada rodam. -->
+<main class="painel" id="painel" hidden>
+
+  <section class="bloco bloco-fases" aria-labelledby="tituloFases">
+    <div class="bloco-topo">
+      <span class="bloco-icone" aria-hidden="true">🗺️</span>
+      <h2 id="tituloFases">Minhas fases</h2>
+    </div>
+    <p class="bloco-destaque" id="fasesDestaque"><b id="fasesFeitas">0</b> de <span id="fasesTotal">13</span> fases concluídas</p>
+    <div class="barra-grande" id="barraFases" role="progressbar" aria-labelledby="tituloFases"><i></i></div>
+    <ul class="trilha" id="trilha"></ul>
+    <a class="botao-continuar" id="btnContinuar" href="jogar.html">Ir para o mapa de fases ➡</a>
+  </section>
+
+  <section class="bloco bloco-pontos" aria-labelledby="tituloPontos">
+    <div class="bloco-topo">
+      <span class="bloco-icone" aria-hidden="true">🪙</span>
+      <h2 id="tituloPontos">Meus pontos</h2>
+    </div>
+    <p class="pontos-total"><b id="pontosTotal">0</b> pontos</p>
+    <div class="moedas" id="moedas" role="img" aria-label="Nenhuma moeda ainda"></div>
+    <p class="moedas-legenda" id="moedasLegenda"></p>
+
+    <div class="objetivo" id="objetivoPontos" hidden>
+      <p class="objetivo-titulo">Próximo objetivo: <b id="objetivoNome"></b></p>
+      <div class="barra-grande pontos" id="barraObjetivo" role="progressbar" aria-labelledby="objetivoNome"><i></i></div>
+      <p class="objetivo-quanto" id="objetivoQuanto"></p>
+    </div>
+
+    <h3 id="tituloEstrelas">Minhas estrelas <span id="estrelasQuanto"></span></h3>
+    <div class="barra-grande estrelas" id="barraEstrelas" role="progressbar" aria-labelledby="tituloEstrelas"><i></i></div>
+  </section>
+
+  <section class="bloco bloco-recompensas" aria-labelledby="tituloRecompensas">
+    <div class="bloco-topo">
+      <span class="bloco-icone" aria-hidden="true">🏅</span>
+      <h2 id="tituloRecompensas">Minhas recompensas</h2>
+    </div>
+    <div class="medalheiro" id="medalheiro"></div>
+    <p class="bloco-recado" id="recadoMedalhas" hidden></p>
+
+    <h3>Galeria de Conquistas <span id="conquistasQuanto"></span></h3>
+    <div id="galeria"></div>
+    <p class="bloco-recado" id="recadoConquistas" hidden></p>
+  </section>
+
+  <p class="painel-rodape" id="painelRodape" hidden>Mostrando o que está salvo neste dispositivo.</p>
+</main>
+
+<script type="module" src="js/painel.js"></script>
+</body>
+</html>

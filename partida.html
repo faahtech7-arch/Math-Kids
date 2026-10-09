@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Baloo+2:wght@500;700;800&family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
 <link rel="stylesheet" href="css/jogo.css">
+<link rel="stylesheet" href="css/recompensas.css">
 </head>
 <body>
 
@@ -24,10 +25,13 @@
   <div class="hud-linha">
     <button class="btn-voltar" id="btnVoltar" aria-label="Voltar ao mapa">←</button>
     <span class="titulo-fase" id="tituloFase">Fase</span>
+    <!-- Épico 4 (história 6.6): a Galeria de Conquistas abre por cima da
+         partida, sem trocar de página, e pausa o cronômetro enquanto isso. -->
+    <button type="button" class="btn-trofeu" id="btnTrofeu" aria-label="Abrir a Galeria de Conquistas">🏆</button>
     <span class="chip vidas" id="chipVidas">❤❤❤</span>
   </div>
   <div class="hud-linha">
-    <span class="chip pontos">⭐ <span id="pontos">0</span></span>
+    <span class="chip pontos" id="chipPontos">⭐ <span id="pontos">0</span></span>
     <span class="chip combo" id="chipCombo" hidden>🔥 <span id="combo">0</span></span>
     <span class="chip" id="chipQuestao">1/8</span>
   </div>
@@ -36,29 +40,67 @@
 </div>
 
 <div class="cartao-conta">
+  <!-- Contexto do problema (Épico 3, história 5.3): historinha do dia a dia
+       + ilustração. Fica `hidden` quando a questão não tem enunciado. -->
+  <div class="contexto" id="contexto" role="group" aria-label="Enunciado do problema" hidden>
+    <span class="ilustracao" id="ilustracao" aria-hidden="true"></span>
+    <p class="enunciado" id="enunciado"></p>
+  </div>
   <div class="conta" id="conta">— =</div>
-  <div class="slots" id="slots"></div>
+  <div class="slots" id="slots" role="group" aria-label="Sua resposta"></div>
 </div>
 
 <div class="area-desenho">
-  <div class="tela-wrap" id="telaWrap">
-    <canvas id="tela" width="300" height="300"></canvas>
-    <div class="guia">Escreva o número aqui com o dedo ou o mouse</div>
+  <!-- Duas formas de responder: desenhar na lousa ou tocar nos números.
+       O teclado na tela é a alternativa pra quem ainda não desenha firme. -->
+  <div class="modo-resposta" role="group" aria-label="Escolha como responder">
+    <button type="button" class="modo-btn" id="btnModoDesenho" aria-pressed="true">✏️ Desenhar</button>
+    <button type="button" class="modo-btn" id="btnModoTeclado" aria-pressed="false">🔢 Números</button>
   </div>
-  <div class="acoes-desenho">
-    <button class="btn-apagar" id="btnApagar">Apagar</button>
-    <button class="btn-conferir" id="btnConferir" disabled>Conferir</button>
+
+  <div class="sub-area" id="areaDesenho">
+    <div class="tela-wrap" id="telaWrap">
+      <canvas id="tela" width="300" height="300"
+              aria-label="Lousa: escreva o número com o dedo ou o mouse"></canvas>
+      <div class="guia">Escreva o número aqui com o dedo ou o mouse</div>
+    </div>
+    <div class="acoes-desenho">
+      <button class="btn-apagar" id="btnApagar">Apagar</button>
+      <button class="btn-conferir" id="btnConferir" disabled>Conferir</button>
+    </div>
   </div>
+
+  <div class="sub-area" id="areaTeclado" hidden>
+    <div class="teclado-num" id="tecladoNum"><!-- teclas geradas em js/partida.js --></div>
+  </div>
+
   <p class="aviso" id="aviso" role="status" aria-live="polite"></p>
 </div>
 
 <div class="fim-overlay" id="fimOverlay">
-  <div class="fim-cartao">
-    <h2 id="fimTitulo">Fase concluída!</h2>
+  <div class="fim-cartao" role="dialog" aria-modal="true" aria-labelledby="fimTitulo">
+    <h2 id="fimTitulo" tabindex="-1">Fase concluída!</h2>
     <div class="fim-estrelas" id="fimEstrelas"></div>
+    <!-- Épico 4: medalha da partida (6.2) e conquistas novas (6.4).
+         Preenchidos em js/partida.js ao terminar a fase. -->
+    <div class="fim-medalha" id="fimMedalha" hidden>
+      <span class="medalha" id="fimMedalhaDesenho"></span>
+      <div class="fim-medalha-texto">
+        <p class="fim-medalha-nome" id="fimMedalhaNome"></p>
+        <p class="fim-medalha-meta" id="fimMedalhaMeta"></p>
+      </div>
+    </div>
     <div class="fim-numeros" id="fimNumeros"></div>
+    <div class="fim-conquistas" id="fimConquistas" role="status" aria-live="polite" hidden>
+      <p class="fim-conquistas-titulo" id="fimConquistasTitulo">Nova conquista! 🎉</p>
+      <ul id="fimConquistasLista"></ul>
+    </div>
     <div class="fim-acoes" id="fimAcoes"></div>
-    <p class="salvo-aviso" id="salvoAviso"></p>
+    <div class="fim-atalhos">
+      <button type="button" id="btnFimProgresso">📊 Meu progresso</button>
+      <button type="button" id="btnFimConquistas">🏆 Conquistas</button>
+    </div>
+    <p class="salvo-aviso" id="salvoAviso" role="status" aria-live="polite"></p>
   </div>
 </div>
 

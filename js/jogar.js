@@ -14,11 +14,18 @@
   Sem Supabase (offline, schema não instalado), `listarFasesComStatus` cai
   sozinho para js/fases.js + o espelho local de progresso e devolve
   origem "local" — a tela continua idêntica para a criança.
+
+  Épico 4: cada cartão concluído mostra a MEDALHA da fase (história 6.2) e
+  o menu ganhou dois atalhos — o painel "Meu progresso" (outra página) e a
+  Galeria de Conquistas (janela por cima do menu, js/galeria.js).
   =========================================================================
 */
 import { exigirSessao, limparSessao } from "./sessao.js";
 import { faceSVG } from "./avatares.js";
 import { listarFasesComStatus } from "./conteudo.js";
+import { carregarConquistas, conquistasNaoVistas } from "./progresso.js";
+import { NIVEIS, medalhaSVG, nivelDaRecompensa } from "./recompensas.js";
+import { criarGaleria, textoDaContagem } from "./galeria.js";
 
 const sessao = exigirSessao();
 
@@ -26,10 +33,36 @@ document.getElementById("avatarFace").innerHTML =
   faceSVG(sessao.avatar.tipo, sessao.avatar.cor, sessao.avatar.accent);
 document.getElementById("avatarNome").textContent = sessao.avatar.nome;
 
+async function voltarAoLogin() {
+  await limparSessao();
+  location.replace("index.html");
+}
+
 document.getElementById("btnSair").addEventListener("click", async () => {
   await limparSessao();
   location.href = "index.html";
 });
+
+/* ---- Galeria de Conquistas (história 6.6) ----
+   O atalho mostra quantas a criança já tem e acende o "NOVA!" quando existe
+   conquista que ela ainda não abriu a galeria para ver. */
+function pintarAtalhoDeConquistas(conquistas) {
+  const resumo = textoDaContagem(conquistas);
+  if (resumo) document.getElementById("conquistasResumo").textContent = resumo;
+  document.getElementById("conquistasSelo").hidden = conquistasNaoVistas(conquistas).length === 0;
+}
+
+const galeria = criarGaleria({
+  token: sessao.token,
+  aoSessaoExpirada: voltarAoLogin,
+  aoCarregar: pintarAtalhoDeConquistas, // abrir a galeria apaga o "NOVA!"
+});
+document.getElementById("btnConquistas").addEventListener("click", () => galeria.abrir());
+
+async function atualizarAtalhoDeConquistas() {
+  const { conquistas } = await carregarConquistas(sessao.token);
+  if (conquistas.length) pintarAtalhoDeConquistas(conquistas);
+}
 
 const gridFases = document.getElementById("gridFases");
 const gridExtras = document.getElementById("gridExtras");
@@ -93,6 +126,23 @@ function cardFase(f, anterior) {
     <span class="melhor">${legendaDoCartao(f, anterior)}</span>
   `;
   el.appendChild(status);
+
+  /* Medalha da fase (história 6.2): um selo no canto do emoji. Ela sai das
+     estrelas — bronze, prata e ouro são 1, 2 e 3 estrelas — então as duas
+     nunca se contradizem no cartão. O nome vai escondido em texto porque o
+     desenho sozinho não diz nada a um leitor de tela. */
+  const nivel = bloqueada ? null : nivelDaRecompensa(f.estrelas);
+  if (nivel) {
+    const selo = document.createElement("span");
+    selo.className = "medalha medalha-selo";
+    selo.innerHTML = medalhaSVG(nivel);
+    el.querySelector(".emoji").appendChild(selo);
+
+    const nome = document.createElement("span");
+    nome.className = "visually-hidden";
+    nome.textContent = `${NIVEIS[nivel].nome}.`;
+    el.querySelector(".estrelas").after(nome);
+  }
   return el;
 }
 
@@ -119,13 +169,14 @@ async function atualizar() {
   // Sessão expirada é o único erro que a criança precisa sentir: volta pro
   // login. Qualquer outra falha já virou conteúdo local lá dentro.
   if (erro && String(erro).includes("Sessão")) {
-    await limparSessao();
-    location.replace("index.html");
+    await voltarAoLogin();
     return;
   }
   if (erro) console.warn("Fases: usando conteúdo local.", erro);
 
   desenhar(fases);
+  // sem await: o menu não espera a galeria para aparecer
+  atualizarAtalhoDeConquistas();
 }
 
 await atualizar();

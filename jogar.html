@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Baloo+2:wght@500;700;800&family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
 <link rel="stylesheet" href="css/jogo.css">
+<link rel="stylesheet" href="css/recompensas.css">
 </head>
 <body>
 
@@ -24,6 +25,26 @@
   <span class="placar-estrelas">⭐ <span id="totalEstrelas">0</span>/<span id="maxEstrelas">39</span></span>
   <button class="btn-sair" id="btnSair">Sair</button>
 </div>
+
+<!-- Épico 4: o painel "Meu progresso" é outra página; a Galeria de Conquistas
+     abre como janela por cima do menu (js/galeria.js), sem sair daqui. -->
+<nav class="atalhos" aria-label="Meu progresso e minhas conquistas">
+  <a class="atalho progresso" href="progresso.html">
+    <span class="atalho-icone" aria-hidden="true">📊</span>
+    <span class="atalho-texto">
+      <b>Meu progresso</b>
+      <small>Fases, pontos e medalhas</small>
+    </span>
+  </a>
+  <button type="button" class="atalho conquistas" id="btnConquistas">
+    <span class="atalho-icone" aria-hidden="true">🏆</span>
+    <span class="atalho-texto">
+      <b>Conquistas</b>
+      <small id="conquistasResumo">Veja sua galeria</small>
+    </span>
+    <span class="selo-nova" id="conquistasSelo" hidden>NOVA!</span>
+  </button>
+</nav>
 
 <main class="mapa">
   <h2>Fases</h2>

@@ -145,11 +145,40 @@
     display:flex; align-items:center; justify-content:center;
     animation: bob 3.6s ease-in-out infinite;
   }
-  .avatar-card:nth-child(3n+2) .avatar-face{ animation-delay: .3s; }
-  .avatar-card:nth-child(3n+3) .avatar-face{ animation-delay: .6s; }
-  .avatar-card:nth-child(6n+4) .avatar-face{ animation-delay: .9s; }
-  .avatar-card:nth-child(6n+5) .avatar-face{ animation-delay: 1.2s; }
-  .avatar-card:nth-child(6n+6) .avatar-face{ animation-delay: 1.5s; }
+  .avatar-item:nth-child(3n+2) .avatar-face{ animation-delay: .3s; }
+  .avatar-item:nth-child(3n+3) .avatar-face{ animation-delay: .6s; }
+  .avatar-item:nth-child(6n+4) .avatar-face{ animation-delay: .9s; }
+  .avatar-item:nth-child(6n+5) .avatar-face{ animation-delay: 1.2s; }
+  .avatar-item:nth-child(6n+6) .avatar-face{ animation-delay: 1.5s; }
+
+  /* Cada avatar é um item da grade com dois botões irmãos: o cartão (entrar)
+     e o ✕ (excluir). O item é quem ocupa a célula; o cartão o preenche. */
+  .avatar-item{ position:relative; display:flex; }
+  .avatar-item .avatar-card{ flex:1; min-width:0; }
+
+  /* ✕ de excluir: aparece só com o mouse em cima do avatar, ou quando o foco
+     do teclado chega nele. Em tela de toque não existe "passar o mouse",
+     então ali ele nunca aparece — no tablet a exclusão fica na Área do
+     responsável. Escondido, ele também não recebe clique: um toque no canto
+     do cartão não pode abrir a exclusão por acidente. */
+  .avatar-excluir{
+    position:absolute; top:-12px; right:-12px; z-index:2;
+    width:36px; height:36px; padding:0; border-radius:50%;
+    border: 3px solid var(--ink); background:#E5484D; color:#fff;
+    font-size:1rem; font-weight:900; line-height:1; cursor:pointer;
+    box-shadow: 3px 3px 0 var(--ink);
+    opacity:0; pointer-events:none; transform: scale(.6);
+    transition: opacity .12s ease, transform .12s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  @media (hover:hover) and (pointer:fine){
+    .avatar-item:hover .avatar-excluir{ opacity:1; pointer-events:auto; transform: scale(1); }
+  }
+  .avatar-card:focus-visible + .avatar-excluir,
+  .avatar-excluir:focus-visible{ opacity:1; pointer-events:auto; transform: scale(1); }
+  .avatar-item .avatar-excluir:hover{ transform: scale(1.12); }
+  .avatar-item .avatar-excluir:active{ transform: scale(.95); box-shadow: 0 0 0 var(--ink); }
+  .avatar-excluir:focus-visible{ outline: 3px solid var(--pop-blue); outline-offset: 2px; }
 
   @keyframes bob{
     0%,100%{ transform: translateY(0) rotate(0deg); }

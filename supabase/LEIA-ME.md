@@ -125,6 +125,105 @@ liberaria pelo servidor.
 Como cadastrar conteúdo novo (fase, problema ou tema) está em
 [CONTEUDO.md](CONTEUDO.md).
 
+## Épico 4 — progresso, pontuação e recompensas
+
+O `schema.sql` agora também cria o que a criança **ganha** ao terminar uma
+fase. Antes o banco guardava estrelas e pontos do jeito que o navegador
+mandava; agora quem calcula é o servidor.
+
+**Já tem o banco instalado?** Rode o `schema.sql` inteiro de novo no SQL
+Editor. É seguro (tudo é `if not exists` / `create or replace`) e a migração
+do progresso antigo acontece sozinha, uma vez só. Enquanto você não rodar, o
+jogo novo continua funcionando com o banco antigo — só que medalhas e
+conquistas ficam guardadas apenas no dispositivo.
+
+- **`progresso_avatar`** — substitui a `progresso`. Uma linha por
+  `(avatar, fase)` com `concluida`, `estrelas`, `nivel_recompensa`
+  (`bronze`/`prata`/`ouro`), `pontuacao`, `acertos`, `erros`, `tempo_gasto`,
+  `melhor_combo`, `tentativas` e `data_conclusao`. Guarda sempre o melhor:
+  o maior de estrelas/pontos/acertos/combo, o menor de erros/tempo, e a
+  primeira data de conclusão.
+- **`conquistas`** — o catálogo, com a regra de cada uma em duas colunas:
+  `criterio_tipo` (qual métrica) e `criterio_valor` (quanto precisa valer).
+  Já vem com 15 conquistas.
+- **`conquistas_avatar`** — o que cada avatar desbloqueou e quando.
+
+A tabela `progresso` antiga **não é apagada**: as linhas são copiadas para
+`progresso_avatar` e marcadas com `migrado_e4`, para a cópia não se repetir.
+Nada mais lê nem escreve nela.
+
+Novas funções RPC (todas `security definer`, `grant execute ... to anon`):
+
+| função | usada em | o que faz |
+|---|---|---|
+| `registrar_resultado_fase(token, fase_id, respostas, tempo_gasto)` | `js/partida.js` | recebe as respostas da partida, **refaz a conta** (pontos, estrelas, medalha), grava mantendo o melhor e devolve `{ partida, progresso, novas_conquistas }` |
+| `consultar_progresso(token)` | histórico | resumo do avatar + a trilha fase a fase |
+| `listar_conquistas(token)` | `js/galeria.js` | todas as conquistas ativas + o estado daquele avatar (com `valor_atual`, para o "3 de 5") |
+| `painel_progresso(token)` | `progresso.html` | resumo + fases + conquistas numa chamada só |
+
+`respostas` é uma lista com um objeto por questão, na ordem jogada:
+`{ "t": tentativa em que acertou (0 = não acertou), "e": tentativas que não
+deram certo, "r": décimos de segundo que sobravam no cronômetro }`.
+
+As RPCs antigas continuam com o **mesmo nome e o mesmo formato de resposta**
+(`carregar_progresso`, `listar_fases_progresso`, `salvar_resultado_fase`), só
+que lendo e gravando em `progresso_avatar`. Duas mudanças de propósito em
+`salvar_resultado_fase`: as estrelas passam a sair das metas da fase (o
+`p_estrelas` enviado é ignorado) e os pontos são limitados ao máximo que a
+partida poderia valer.
+
+**A regra de pontuação** está em `pontos_do_acerto()`: base 100 / 60 / 30
+conforme a tentativa, + 10 por acerto seguido (até +80), + até 40 de bônus
+de tempo nas fases com cronômetro. Não existe parcela negativa: errar nunca
+tira ponto. `js/pontuacao.js` faz a mesma conta no navegador — mudou a regra
+num lugar, mude no outro (`node ferramentas/testar-recompensas.mjs` acusa se
+os dois saírem de sincronia).
+
+**O motor de conquistas** é `avaliar_conquistas()`: calcula as métricas do
+avatar (`metricas_do_avatar()`) e desbloqueia toda conquista ativa em que
+`metrica[criterio_tipo] >= criterio_valor`. Três gatilhos cuidam do resto:
+todo progresso gravado reavalia o avatar; conquista cadastrada ou alterada
+reavalia todo mundo; e `criterio_tipo` inexistente é recusado na hora. Como
+cadastrar uma conquista nova está em [CONTEUDO.md](CONTEUDO.md).
+
+**Segurança.** `progresso_avatar` e `conquistas_avatar` têm RLS ligado **sem
+policy**, como `sessoes`: o jogo não usa o login do Supabase Auth (a criança
+entra com avatar + PIN), então não existe `auth.uid()` para escrever uma
+policy por linha. O isolamento por avatar é feito nas funções, que descobrem
+o avatar pelo token da sessão. `conquistas` é catálogo, com leitura pública
+como `fases`.
+
+Um detalhe que este script passou a tratar: em projeto Supabase, função
+criada em `public` já nasce executável por `anon`. Tirar o `execute` só de
+`PUBLIC` não fecha a porta — por isso as funções internas agora têm
+`revoke ... from public, anon, authenticated`. Isso importa em
+`gravar_resultado()`, que recebe o avatar direto, sem token.
+
+Para conferir depois de rodar, a última mensagem do script é
+`--- Épico 4: 15 conquistas ativas, N linha(s) em progresso_avatar, ... ---`.
+
+## Excluir avatar (sem PIN)
+
+`excluir_avatar` mudou de assinatura: era `(avatar_id, pin)` e passou a ser
+só `(avatar_id)`. A exclusão agora é um ✕ no cartão do avatar, com uma
+confirmação na tela, e **não pede mais o PIN**. O `schema.sql` remove a
+versão antiga (`drop function if exists excluir_avatar(uuid, text)`) antes
+de criar a nova, então basta rodar o arquivo de novo.
+
+Enquanto o banco estiver com a versão antiga, o front novo não consegue
+excluir: a confirmação mostra *"O banco ainda não foi atualizado para
+excluir sem PIN"* e nada é apagado.
+
+O que a função faz não mudou: apaga progresso, medalhas, conquistas, sessões
+e consentimento do avatar, devolve-o para a lista de disponíveis e apaga o
+responsável que ficar sem nenhum avatar. Devolve `true` se excluiu e `false`
+se o avatar já não estava ativo.
+
+Sem o PIN não há mais nenhuma credencial protegendo a exclusão: qualquer
+pessoa com acesso ao jogo consegue excluir qualquer avatar. Se isso deixar
+de servir, o lugar de voltar a exigir uma credencial é dentro da própria
+função (está comentado lá).
+
 ## O que ainda falta (fora do escopo)
 - História 3.6 (recuperar PIN esquecido) — hoje só mostra um `alert()`.
   Dá pra plugar com uma função `redefinir_pin(...)` no mesmo padrão das
@@ -132,3 +231,5 @@ Como cadastrar conteúdo novo (fase, problema ou tema) está em
 - Limpeza periódica de `sessoes` expiradas: `iniciar_sessao` já apaga as
   vencidas a cada login; um cron do Supabase (`pg_cron`) faria isso de
   forma proativa, mas não é obrigatório.
+- Fila de reenvio: partida jogada sem internet fica só no dispositivo. O
+  servidor só recebe o resultado quando a fase for jogada de novo com rede.

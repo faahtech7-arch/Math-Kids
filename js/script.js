@@ -36,10 +36,15 @@ const grid = document.getElementById("avatarGrid");
 function renderAvatarGrid(){
   grid.innerHTML = "";
   AVATARS.forEach(av => {
+    // Cada avatar tem DOIS botões irmãos: o cartão (entrar) e o ✕ (excluir).
+    // Botão dentro de botão é HTML inválido — por isso o item em volta.
+    const item = document.createElement("div");
+    item.className = "avatar-item";
+    item.setAttribute("role", "listitem");
+
     const card = document.createElement("button");
     card.type = "button";
     card.className = "avatar-card";
-    card.setAttribute("role", "listitem");
     card.setAttribute("aria-label", `Entrar como ${av.nome}`);
     card.innerHTML = `
       <div class="avatar-face" style="background:#fff">${faceSVG(av.tipo, av.cor, av.accent)}</div>
@@ -47,7 +52,19 @@ function renderAvatarGrid(){
       <span class="avatar-status">Pronto pra jogar</span>
     `;
     card.addEventListener("click", () => openPinSheet(av));
-    grid.appendChild(card);
+
+    // Só aparece com o mouse em cima do avatar ou com o foco do teclado
+    // (css/style.css). Clicar não apaga nada ainda: abre a confirmação.
+    const excluir = document.createElement("button");
+    excluir.type = "button";
+    excluir.className = "avatar-excluir";
+    excluir.setAttribute("aria-label", `Excluir o avatar ${av.nome}`);
+    excluir.title = `Excluir ${av.nome}`;
+    excluir.textContent = "✕";
+    excluir.addEventListener("click", () => pedirExclusao(av, "grade"));
+
+    item.append(card, excluir);
+    grid.appendChild(item);
   });
 }
 
@@ -483,6 +500,11 @@ function renderRespStep(){
     return;
   }
 
+  if(respStep === "confirmarExclusao"){
+    renderDeleteConfirm();
+    return;
+  }
+
   if(respStep === "excluido"){
     respEyebrow.textContent = "Tudo pronto";
     respTitle.textContent = "Avatar excluído";
@@ -501,11 +523,30 @@ function renderRespStep(){
 }
 
 /*
-  Excluir avatar: o responsável escolhe o avatar, digita o PIN dele e
-  confirma. A função excluir_avatar (schema.sql) confere o PIN, apaga
-  progresso/sessões/consentimento e devolve o avatar para a lista de
-  disponíveis — a linha em si continua, porque os avatares são pré-definidos.
+  Excluir avatar — SEM pedir o PIN dele.
+
+  Dois caminhos levam à mesma confirmação:
+    grade  o ✕ que aparece no canto do cartão ao passar o mouse (ou ao
+           chegar nele pelo teclado);
+    area   Área do responsável > "Excluir um avatar" — é o caminho para
+           tablet, onde não existe "passar o mouse" e o ✕ nunca aparece.
+
+  O clique nunca apaga direto: abre a confirmação, que mostra o avatar e o
+  que vai se perder. Só o botão "Excluir avatar" chama excluir_avatar
+  (schema.sql), que apaga progresso/medalhas/conquistas/sessões/consentimento
+  e devolve o avatar para a lista de disponíveis — a linha em si continua,
+  porque os avatares são pré-definidos.
 */
+function pedirExclusao(avatar, origem){
+  respData = { nome: "", contato: "", avatar, pin: "", origemExclusao: origem };
+  respStep = "confirmarExclusao";
+  renderRespStep();
+  respOverlay.classList.add("open");
+  respOverlay.setAttribute("aria-hidden", "false");
+  // o foco começa no "Cancelar": um Enter distraído não pode apagar nada
+  document.getElementById("respBack").focus();
+}
+
 function renderDeleteStep(){
   respEyebrow.textContent = "Área do responsável";
   respTitle.textContent = "Excluir um avatar";
@@ -524,109 +565,100 @@ function renderDeleteStep(){
   respBody.innerHTML = `
     <p style="font-weight:700; font-size:0.88rem; margin:0 0 8px;">Qual avatar você quer excluir?</p>
     <div class="avatar-pick-grid" id="deletePickGrid"></div>
-    <div class="mini-keypad-wrap">
-      <p style="font-weight:700; font-size:0.88rem; margin:14px 0 8px;">Digite o PIN desse avatar</p>
-      <div class="pin-dots" id="deletePinDots">
-        <span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span>
-      </div>
-      <div class="keypad" id="deleteKeypad"></div>
-    </div>
-    <label class="consent-check">
-      <input type="checkbox" id="deleteConfirm">
-      <span>Entendo que o progresso (fases e estrelas) desse avatar será apagado para sempre.</span>
-    </label>
-    <p class="pin-feedback error" id="respFeedback" role="status" aria-live="polite"></p>
     <div class="step-actions">
       <button type="button" class="btn ghost" id="respBack">Voltar</button>
-      <button type="button" class="btn danger" id="respNext" disabled>Excluir avatar</button>
     </div>
   `;
 
   const pickGrid = document.getElementById("deletePickGrid");
-  const dots = document.getElementById("deletePinDots");
-  const confirmBox = document.getElementById("deleteConfirm");
-  const feedback = document.getElementById("respFeedback");
-  const nextBtn = document.getElementById("respNext");
-
   AVATARS.forEach(av => {
     const pick = document.createElement("button");
     pick.type = "button";
     pick.className = "avatar-pick";
-    pick.innerHTML = `
-      <div class="avatar-face" style="background:#fff">${faceSVG(av.tipo, av.cor, av.accent)}</div>
-      <span>${av.nome}</span>
-    `;
-    pick.addEventListener("click", () => {
-      respData.avatar = av;
-      [...pickGrid.children].forEach(c => c.classList.remove("selected"));
-      pick.classList.add("selected");
-      checkReady();
-    });
+    pick.innerHTML = `<div class="avatar-face" style="background:#fff">${faceSVG(av.tipo, av.cor, av.accent)}</div>`;
+    const nome = document.createElement("span");
+    nome.textContent = av.nome;
+    pick.appendChild(nome);
+    pick.addEventListener("click", () => pedirExclusao(av, "area"));
     pickGrid.appendChild(pick);
   });
 
-  const keypadEl = document.getElementById("deleteKeypad");
-  ["1","2","3","4","5","6","7","8","9","del","0"].forEach(k => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    if(k === "del"){
-      btn.className = "key action";
-      btn.setAttribute("aria-label","Apagar número");
-      btn.textContent = "⌫";
-      btn.addEventListener("click", () => setPin(respData.pin.slice(0,-1)));
-    } else {
-      btn.className = "key";
-      btn.textContent = k;
-      btn.addEventListener("click", () => setPin(respData.pin + k));
-    }
-    keypadEl.appendChild(btn);
-  });
+  document.getElementById("respBack").addEventListener("click", () => { respStep = 0; renderRespStep(); });
+}
 
-  function setPin(next){
-    respData.pin = next.slice(0, MAX_PIN_LENGTH);
-    dots.querySelectorAll(".dot").forEach((d,i) => d.classList.toggle("filled", i < respData.pin.length));
-    feedback.textContent = "";
-    checkReady();
-  }
+function renderDeleteConfirm(){
+  const av = respData.avatar;
+  respEyebrow.textContent = "Excluir avatar";
+  respTitle.textContent = `Excluir ${av.nome}?`;
+  respBody.innerHTML = `
+    <div style="text-align:center; padding: 6px 0 4px;">
+      <div class="avatar-face" style="width:84px; height:84px; margin:0 auto 12px; background:#fff; animation:none">
+        ${faceSVG(av.tipo, av.cor, av.accent)}
+      </div>
+      <p style="font-weight:700; color:var(--ink-soft); font-size:0.92rem; margin:0;">
+        O progresso desse avatar — fases, estrelas, medalhas e conquistas — será
+        apagado <strong>para sempre</strong>, e ele volta para a lista de avatares disponíveis.
+      </p>
+    </div>
+    <p class="pin-feedback error" id="respFeedback" role="status" aria-live="polite"></p>
+    <div class="step-actions">
+      <button type="button" class="btn ghost" id="respBack">Cancelar</button>
+      <button type="button" class="btn danger" id="respNext">Excluir avatar</button>
+    </div>
+  `;
 
-  function checkReady(){
-    nextBtn.disabled = !(respData.avatar && respData.pin.length === MAX_PIN_LENGTH && confirmBox.checked);
-  }
-  confirmBox.addEventListener("change", checkReady);
+  const feedback = document.getElementById("respFeedback");
+  const nextBtn = document.getElementById("respNext");
 
+  // cancelar volta para de onde a pessoa veio: a tela inicial ou a lista
   document.getElementById("respBack").addEventListener("click", () => {
-    respData.avatar = null;
-    respData.pin = "";
-    respStep = 0;
-    renderRespStep();
+    if(respData.origemExclusao === "area"){
+      respStep = "excluir";
+      renderRespStep();
+    } else {
+      closeRespHub();
+    }
   });
 
   nextBtn.addEventListener("click", async () => {
     nextBtn.disabled = true;
     feedback.textContent = "Excluindo...";
 
-    const { data: ok, error } = await supabase.rpc("excluir_avatar", {
-      p_avatar_id: respData.avatar.id,
-      p_pin: respData.pin
-    });
+    const { error } = await supabase.rpc("excluir_avatar", { p_avatar_id: av.id });
 
     if(error){
       console.error("Erro ao excluir avatar:", error);
-      feedback.textContent = "Não deu pra excluir agora — tenta de novo em instantes.";
-      checkReady();
+      /* PGRST202 = o banco ainda tem a função antiga, que exigia o PIN. Quem
+         lê esta mensagem é um adulto (responsável ou professor): vale dizer
+         o que falta, em vez de um "tenta de novo" que nunca daria certo. */
+      feedback.textContent = error.code === "PGRST202"
+        ? "O banco ainda não foi atualizado para excluir sem PIN. Rode o supabase/schema.sql novo no Supabase."
+        : "Não deu pra excluir agora — tenta de novo em instantes.";
+      nextBtn.disabled = false;
       return;
     }
-    if(!ok){
-      setPin(""); // setPin limpa o feedback, então a mensagem vem depois
-      feedback.textContent = "PIN incorreto para esse avatar.";
-      return;
-    }
+    // (`false` quer dizer que o avatar já não estava ativo — excluído em outro
+    //  computador, por exemplo. O resultado é o mesmo: ele não existe mais.)
 
+    await esquecerNesteDispositivo(av.id);
     await Promise.all([carregarAvataresAtivos(), carregarAvataresDisponiveis()]);
-    respData.pin = "";
     respStep = "excluido";
     renderRespStep();
   });
+}
+
+/* O progresso também tem um espelho neste dispositivo, uma gaveta por avatar
+   (js/progresso.js). Sem esvaziá-la, a próxima criança que recebesse este
+   avatar neste mesmo computador herdaria fases, medalhas e conquistas.
+   O import é feito só aqui: a tela inicial não precisa carregar a camada de
+   progresso inteira para listar os avatares. */
+async function esquecerNesteDispositivo(avatarId){
+  try {
+    const { esquecerAvatarLocal } = await import("./progresso.js");
+    esquecerAvatarLocal(avatarId);
+  } catch (e) {
+    console.warn("Não consegui limpar o progresso local do avatar excluído.", e);
+  }
 }
 
 async function finishRegistration(){

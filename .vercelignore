@@ -1,6 +1,7 @@
 # Sintaxe igual a do .gitignore; aplicado junto com o .gitignore no deploy.
-# As paginas de producao (index.html, jogar.html, partida.html) usam
-# apenas css/ e js/ (o modelo de runtime e js/modelo-mnist.json).
+# As paginas de producao (index.html, jogar.html, partida.html,
+# progresso.html) usam apenas css/ e js/ (o modelo de runtime e
+# js/modelo-mnist.json).
 
 # Ferramentas de desenvolvimento (treino do modelo, geracao de amostras,
 # harness de teste). Nada aqui e carregado em producao.

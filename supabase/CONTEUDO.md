@@ -1,8 +1,9 @@
-# Cadastrar fases e problemas — Math Kids
+# Cadastrar fases, problemas e conquistas — Math Kids
 
 Guia para quem vai **criar conteúdo novo** no banco: uma conta nova, um tema
-novo, uma fase inteira. Não é preciso saber como o jogo foi feito, e **não é
-preciso mexer no front-end nem fazer deploy** — o site lê tudo do Supabase.
+novo, uma fase inteira, uma conquista. Não é preciso saber como o jogo foi
+feito, e **não é preciso mexer no front-end nem fazer deploy** — o site lê
+tudo do Supabase.
 
 Tudo acontece no **SQL Editor** do projeto Supabase (menu lateral → SQL Editor
 → New query → colar → Run).
@@ -140,8 +141,8 @@ Duas regras que, se quebradas, travam a progressão:
 1. **`ordem` não pode ter furo.** As fases liberam em cadeia — a de ordem N+1
    abre quando a de ordem N é concluída. Se você cadastrar `ordem = 15` com a
    14 faltando, ninguém nunca chega na 15. Hoje a trilha vai de 1 a 13.
-2. **`id` é o código usado na tabela `progresso`.** Use 1–10 para fases
-   normais e 101+ para extras, como já está.
+2. **`id` é o código usado na tabela `progresso_avatar`.** Use 1–10 para
+   fases normais e 101+ para extras, como já está.
 
 ```sql
 insert into fases (id, ordem, nome, icone, cor, operacao_principal, dificuldade,
@@ -160,6 +161,94 @@ select semear_problemas();   -- popula a fase nova com o acervo
 O campo `regras` é o que o jogo usa como **plano B**: se o banco ficar fora do
 ar, o navegador gera contas com esses mesmos parâmetros. Vale a pena preencher.
 
+As metas `meta_uma` / `meta_duas` / `meta_tres` decidem as estrelas **e a
+medalha** da fase (bronze / prata / ouro): é o aproveitamento mínimo para cada
+uma. `0.6, 0.8, 1.0` quer dizer 60% dos acertos para o bronze e 100% para o
+ouro.
+
+---
+
+## Cadastrar uma **conquista** nova
+
+Conquista é uma linha da tabela `conquistas`. A regra de desbloqueio vai em
+duas colunas — **qual número** olhar e **quanto** ele precisa valer — e o jogo
+faz o resto: avalia a cada fase concluída, mostra na Galeria de Conquistas e
+avisa a criança na tela de fim de fase.
+
+| Campo | Obrigatório | O que é |
+|---|---|---|
+| `codigo` | sim | apelido único, sem espaço nem acento (`trio_de_fases`). Não mude depois de criado |
+| `nome` | sim | o título que a criança lê |
+| `descricao` | sim | uma frase lúdica. É ela que ensina como ganhar, então diga o que precisa ser feito |
+| `icone` | sim | um emoji |
+| `cor` | não | cor de fundo do ícone, em hex (padrão `#FFD400`) |
+| `criterio_tipo` | sim | qual número do avatar a regra olha — ver a lista abaixo |
+| `criterio_valor` | sim | quanto esse número precisa valer (maior que zero) |
+| `ordem` | não | posição na galeria |
+| `ativo` | não | `false` esconde a conquista sem apagá-la |
+
+### Os números que uma regra pode olhar (`criterio_tipo`)
+
+| `criterio_tipo` | Conta o quê |
+|---|---|
+| `fases_concluidas` | fases com 1 estrela ou mais |
+| `fases_principais_concluidas` | idem, só as da trilha principal |
+| `fases_extras_concluidas` | idem, só as fases extras |
+| `fases_cronometradas_concluidas` | idem, só as que têm cronômetro |
+| `percentual_concluido` | de 0 a 100: quanto da trilha inteira já foi concluído |
+| `estrelas_total` | soma das estrelas de todas as fases |
+| `pontos_total` | soma da melhor pontuação de cada fase |
+| `medalhas_ouro` | fases com medalha de ouro |
+| `medalhas_prata` | fases com medalha de prata **ou** de ouro |
+| `fases_perfeitas` | fases concluídas acertando todas de primeira |
+| `melhor_combo` | a maior sequência de acertos numa mesma fase |
+| `partidas_jogadas` | partidas terminadas, contando as repetições |
+
+A conquista desbloqueia quando o número é **maior ou igual** ao
+`criterio_valor`.
+
+### Exemplos prontos
+
+```sql
+-- três fases concluídas
+insert into conquistas (codigo, nome, descricao, icone, cor, criterio_tipo, criterio_valor, ordem)
+values ('trio_de_fases', 'Trio de fases',
+        'Três fases concluídas. Já virou rotina!',
+        '🎈', '#4CC9F0', 'fases_concluidas', 3, 16);
+
+-- dez mil pontos somados
+insert into conquistas (codigo, nome, descricao, icone, cor, criterio_tipo, criterio_valor, ordem)
+values ('dez_mil', 'Dez mil!',
+        'Dez mil pontos somados. Que placar gigante!',
+        '🚀', '#FF9A3D', 'pontos_total', 10000, 17);
+
+-- todas as fases principais no ouro
+insert into conquistas (codigo, nome, descricao, icone, cor, criterio_tipo, criterio_valor, ordem)
+values ('tudo_dourado', 'Tudo dourado',
+        'Dez medalhas de ouro. A trilha inteira brilhando!',
+        '✨', '#FFD400', 'medalhas_ouro', 10, 18);
+```
+
+### O que acontece ao salvar
+
+- **Quem já cumpria a regra ganha na hora.** Cadastrou "três fases
+  concluídas" e a criança já tinha cinco? A conquista aparece desbloqueada na
+  próxima vez que ela abrir a galeria.
+- **`criterio_tipo` errado é recusado.** Um erro de digitação
+  (`fases_concluida`) faz o `insert` falhar com a lista dos nomes válidos —
+  melhor do que criar uma conquista que nunca desbloqueia.
+- **Conquista ganha é para sempre.** Dá para ajustar a regra depois
+  (`update conquistas set criterio_valor = 5 where codigo = '...'`): baixar o
+  alvo desbloqueia para mais gente; subir o alvo **não tira** de quem já
+  ganhou.
+- **Para tirar do jogo**, prefira `update conquistas set ativo = false` a
+  apagar: apagar remove também o registro de quem já tinha ganhado.
+
+O navegador guarda uma cópia das 15 conquistas originais para funcionar sem
+internet (`CONQUISTAS_PADRAO` em `js/recompensas.js`). Conquista cadastrada só
+no banco aparece normalmente com rede; para ela existir também offline, copie
+a linha para lá.
+
 ---
 
 ## Conferir que apareceu (sem deploy)
@@ -177,6 +266,14 @@ order by f.ordem;
 select dados ->> 'expressao' as conta, resposta_correta, enunciado,
        elementos_visuais ->> 'emoji' as ilustracao
 from sortear_problemas(1, 8);
+
+-- as conquistas e quantos avatares já ganharam cada uma
+select c.ordem, c.codigo, c.nome, c.criterio_tipo, c.criterio_valor, c.ativo,
+       count(ca.avatar_id) as avatares_que_ganharam
+from conquistas c
+left join conquistas_avatar ca on ca.conquista_id = c.id
+group by c.id
+order by c.ordem;
 ```
 
 Depois é só **abrir o jogo e entrar na fase** (recarregando a página, sem

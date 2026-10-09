@@ -14,9 +14,10 @@ Site **100% estático** (HTML + CSS + JavaScript puro, sem build) com backend no
 
 | Tela | Arquivo | O quê |
 |---|---|---|
-| **Quem vai jogar** | `index.html` + `js/script.js` | grade de avatares (vem do Supabase), teclado de PIN, e a "Área do responsável" (cadastro da criança + consentimento) |
+| **Quem vai jogar** | `index.html` + `js/script.js` | grade de avatares (vem do Supabase), teclado de PIN, o ✕ para excluir um avatar e a "Área do responsável" (cadastro da criança + consentimento) |
 | **Mapa de fases** | `jogar.html` + `js/jogar.js` | fases liberadas/bloqueadas, estrelas e melhor pontuação por fase |
 | **Partida** | `partida.html` + `js/partida.js` | as contas da fase, vidas, cronômetro opcional e a lousa onde a criança **desenha o resultado** |
+| **Meu progresso** | `progresso.html` + `js/painel.js` | fases concluídas, pontos em moedas, medalhas e a Galeria de Conquistas |
 
 ---
 
@@ -241,19 +242,199 @@ jogáveis offline.
 
 ---
 
-## 🏆 Pontuação, estrelas e progressão
+## 🏅 Épico 4 — Progresso, pontuação e recompensas
 
-**Pontos por acerto** (`pontosDoAcerto()`):
+Até o Épico 3 o banco guardava só "estrelas e melhor pontuação" — e acreditava
+nos números que o navegador mandava. O Épico 4 muda quem manda: **o servidor
+passa a ser o dono dos pontos, da medalha e das conquistas**. O navegador
+continua fazendo a mesma conta, mas só para mostrar o placar ao vivo e para o
+jogo seguir funcionando quando o banco não responde.
+
+Para a criança, são quatro novidades: o placar que cresce a cada acerto, a
+**medalha** no fim da fase, as **conquistas** e a tela **Meu progresso**.
+
+### 1. Pontuação por fase (6.1)
+
+A regra, em uma frase: **acerto soma, erro nunca subtrai.**
 
 ```
-base    = 100 (de primeira) | 60 (2ª tentativa) | 30 (3ª) | 20
+pontos de um acerto = base + combo + tempo
+  base    100 de primeira | 60 na 2ª tentativa | 30 da 3ª em diante
+  combo   10 × acertos seguidos antes deste (até 8, ou seja, no máximo +80)
+  tempo   só em fase com cronômetro: até +40, pelo tempo que sobrou
+```
+
+Errar não tem parcela negativa: só zera o combo e faz o próximo acerto valer a
+base menor. A pontuação da fase é a soma dos acertos.
+
+A regra mora no banco (`pontos_do_acerto()` e `calcular_partida()` em
+[supabase/schema.sql](supabase/schema.sql)) e tem um espelho em
+[js/pontuacao.js](js/pontuacao.js). As duas contas usam **só inteiros** — o
+tempo entra em décimos de segundo — porque com número quebrado o navegador e o
+Postgres arredondariam diferente de vez em quando, e o placar da tela não
+bateria com o salvo.
+
+Na partida, o placar aparece o tempo todo no topo. A cada acerto o chip dá um
+pulo e o ganho sobe flutuando (`+110`); ao errar nada se mexe, porque o número
+não muda. A pontuação final aparece na tela de fim de fase.
+
+### 2. Medalha por fase concluída (6.2)
+
+| Aproveitamento | Estrelas | Medalha |
+|---|---|---|
+| ≥ `meta_uma` (60%) | ★ | 🥉 bronze — fase concluída |
+| ≥ `meta_duas` (80%) | ★★ | 🥈 prata |
+| ≥ `meta_tres` (100%, ou 90% nas extras) | ★★★ | 🥇 ouro |
+
+A medalha **é a estrela com outra roupa**: as duas saem do mesmo critério
+(`estrelas_do_resultado()` → `nivel_da_recompensa()`), então nunca existe
+"3 estrelas com medalha de prata". Erros e tempo ficam gravados junto e são
+premiados nas conquistas, não numa segunda nota que pudesse contradizer a
+primeira. As metas são dado da tabela `fases`, não constante no código.
+
+A medalha aparece em três lugares: na tela de fim de fase (chegando com
+animação, e com o recado *"Acerte 7 de 8 para ganhar a de prata"*), como selo
+no cartão da fase no menu, e no medalheiro de **Meu progresso**. O desenho é
+SVG gerado em [js/recompensas.js](js/recompensas.js), no mesmo traço dos
+avatares.
+
+### 3. Registro de progresso (6.3)
+
+A tabela `progresso_avatar` assume o lugar da antiga `progresso`: uma linha por
+`(avatar, fase)` com `concluida`, `estrelas`, `nivel_recompensa`, `pontuacao`,
+`acertos`, `erros`, `tempo_gasto`, `melhor_combo`, `tentativas` e
+`data_conclusao`. Quem já tinha progresso é migrado sozinho, uma vez só.
+
+Ao concluir a fase, o navegador **não manda a pontuação**. Manda o que
+aconteceu — um registro por questão e o tempo jogado — e o servidor refaz a
+conta:
+
+```js
+supabase.rpc("registrar_resultado_fase", {
+  p_token, p_fase_id: 1, p_tempo_gasto: 71,
+  p_respostas: [ { t: 1, e: 0, r: 0 },    // acertou de primeira
+                 { t: 2, e: 1, r: 0 },    // acertou na 2ª tentativa
+                 { t: 0, e: 3, r: 0 } ]   // não acertou (3 tentativas)
+})
+// -> { partida: { pontuacao, estrelas, nivel_recompensa, recorde, ... },
+//      progresso: { ...o melhor resultado guardado da fase... },
+//      novas_conquistas: [ ... ] }
+```
+
+`consultar_progresso(token)` devolve o histórico: um resumo e a trilha fase a
+fase.
+
+**Jogar de novo nunca piora o que está guardado:**
+
+| Campo | O que fica |
+|---|---|
+| estrelas, medalha, pontuação, acertos, melhor combo | o **maior** valor já feito |
+| erros, tempo gasto | o **menor** — e só de partida em que a fase foi concluída |
+| data de conclusão | a **primeira** vez |
+| tentativas | acumula (quantas partidas terminadas) |
+
+A gravação acontece numa transação só: valida, calcula estrelas e medalha,
+grava o progresso e desbloqueia as conquistas — ou nada disso. Os limites
+conferidos: total de questões igual ao da fase, tentativa entre 0 e o máximo
+da fase, pontuação nunca acima do teto possível, e tempo ajustado para entre
+1 s por questão e 1 hora (tablet esquecido ligado não custa o progresso).
+
+**Falha de envio não trava o jogo.** O resultado vai primeiro para o espelho
+local e os botões da tela de fim funcionam enquanto o envio acontece. Três
+situações, e em nenhuma a criança vê erro:
+
+| Situação | O que acontece |
+|---|---|
+| banco com o Épico 4 | o servidor calcula tudo e guarda as conquistas |
+| banco ainda no schema antigo | grava pela RPC antiga (`salvar_resultado_fase`); conquistas ficam no dispositivo |
+| sem banco | tudo no dispositivo — *"Progresso salvo neste dispositivo ✔"* |
+
+### 4. Conquistas com regras configuráveis (6.4)
+
+Uma conquista é uma **linha de tabela**, não um `if` no código:
+
+| Tabela | Guarda |
+|---|---|
+| `conquistas` | o catálogo: nome, descrição, ícone e a regra — `criterio_tipo` + `criterio_valor` |
+| `conquistas_avatar` | o que cada avatar desbloqueou e quando |
+
+O motor (`avaliar_conquistas()`) não conhece nenhuma conquista pelo nome. Ele
+calcula as métricas do avatar (`metricas_do_avatar()`) e compara
+`metrica[criterio_tipo] >= criterio_valor` para cada linha ativa. Um gatilho
+dispara a avaliação a cada progresso gravado.
+
+Por isso **conquista nova é um `insert`, sem deploy**:
+
+```sql
+insert into conquistas (codigo, nome, descricao, icone, criterio_tipo, criterio_valor, ordem)
+values ('trio_de_fases', 'Trio de fases', 'Três fases concluídas. Já virou rotina!',
+        '🎈', 'fases_concluidas', 3, 16);
+```
+
+Quem já tinha cumprido o critério ganha na hora; um `criterio_tipo` digitado
+errado é recusado com a lista dos que valem; e conquista ganha é para sempre,
+mesmo que a regra mude depois. São 15 conquistas semeadas e 12 métricas
+disponíveis — o passo a passo está em
+[supabase/CONTEUDO.md](supabase/CONTEUDO.md).
+
+### 5. Tela "Meu progresso" (6.5)
+
+`progresso.html`, separada do menu de fases e aberta pelo atalho no topo dele.
+Nenhuma tabela e nenhum gráfico técnico — só coisa que se lê de relance:
+
+- **Minhas fases** — barra de progresso e a trilha, uma bolinha por fase com a
+  medalha e as estrelas; a fase atual balança e o botão leva direto para ela.
+- **Meus pontos** — o total em **moedas** (uma a cada 500 pontos), o próximo
+  objetivo e a barra de estrelas.
+- **Minhas recompensas** — o medalheiro (ouro / prata / bronze) e a Galeria de
+  Conquistas embutida.
+
+Tudo chega numa chamada só (`painel_progresso`). A pontuação total é a **soma
+da melhor pontuação de cada fase**: repetir uma fase só aumenta o total se
+bater o recorde dela. As barras enchem e as moedas caem ao entrar na tela, e
+tudo é desligado em `prefers-reduced-motion`.
+
+### 6. Galeria de Conquistas (6.6)
+
+Um componente só ([js/galeria.js](js/galeria.js)) usado em três lugares: o
+botão **Conquistas** do menu, o 🏆 no topo da partida e o bloco de recompensas
+do painel.
+
+- Conquistada aparece colorida, com a data; não conquistada fica cinza com
+  cadeado e uma barrinha *"3 de 5"* — o estado também vai em texto para o
+  leitor de tela, não só na cor.
+- Conquista recém-ganha entra com o selo **NOVA!** e animação, e é anunciada
+  na tela de fim de fase.
+- **No meio da partida**, a galeria abre por cima do jogo sem trocar de
+  página e **pausa o cronômetro**. Ela cobre a tela inteira de propósito: com
+  o relógio parado, a conta não pode ficar à vista.
+
+### Testes
+
+```bash
+node ferramentas/testar-recompensas.mjs   # 487 verificações de pontuação, medalhas e conquistas
+```
+
+Roda sem rede, como os outros. Além das regras, ele lê o `schema.sql` e
+confere que o navegador continua sendo um espelho fiel do banco: a fórmula de
+pontos (46.800 combinações), as 15 conquistas do seed e as 12 métricas.
+
+---
+
+## 🏆 Pontuação, estrelas e progressão
+
+**Pontos por acerto** (`pontosDoAcerto()` em [js/pontuacao.js](js/pontuacao.js),
+espelho de `pontos_do_acerto()` no banco):
+
+```
+base    = 100 (de primeira) | 60 (2ª tentativa) | 30 (da 3ª em diante)
 + combo = 10 × combo, limitado a 8 (máx. +80)
 + tempo = só em fase cronometrada: (tempo restante / tempo total) × 40
 ```
 
-**Estrelas** ao fim da fase, pela razão `acertos / total`:
+**Estrelas e medalha** ao fim da fase, pela razão `acertos / total`:
 
-| | 1 ★ | 2 ★ | 3 ★ |
+| | 1 ★ bronze | 2 ★ prata | 3 ★ ouro |
 |---|---|---|---|
 | Fases 1–10 | 60% | 80% | 100% |
 | Fases extras | 60% | 80% | 90% |
@@ -266,7 +447,8 @@ São 13 fases × 3 = **39 estrelas** — número que agora vem da contagem de fa
 cadastradas, não de uma constante no código.
 
 O progresso guarda sempre o **melhor** desempenho de cada fase — repetir uma fase
-nunca piora o recorde.
+nunca piora o recorde. Desde o Épico 4 quem calcula pontos, estrelas e medalha
+ao salvar é o servidor; o navegador só mostra o placar ao vivo.
 
 ---
 
@@ -281,6 +463,15 @@ nunca piora o recorde.
 - A criança nunca digita texto livre — escolhe um avatar pré-cadastrado. Nome e
   contato ficam no cadastro do **responsável**, junto do consentimento (que nunca vem
   marcado por padrão).
+
+**Excluir um avatar.** Passando o mouse sobre um avatar na tela inicial aparece
+um **✕** no canto do cartão (ele também aparece quando o foco do teclado chega
+ali). O clique abre uma confirmação com o rosto do avatar e o que vai se
+perder; só o botão *Excluir avatar* apaga de fato — progresso, medalhas,
+conquistas, sessões e consentimento — e devolve o avatar para a lista de
+disponíveis. **Não pede PIN.** Em tela de toque não existe "passar o mouse",
+então o ✕ nunca aparece no tablet: ali o caminho é *Área do responsável →
+Excluir um avatar*, que leva à mesma confirmação.
 
 **Progresso funciona offline.** [js/progresso.js](js/progresso.js) grava sempre num
 espelho em `localStorage` (uma "gaveta" por avatar) antes de tentar o Supabase. Se o
@@ -328,19 +519,25 @@ O modelo é treinado offline pelos scripts em `ferramentas/` (ver abaixo).
 ```
 math-kids/
 ├── index.html, jogar.html, partida.html   páginas do jogo
+├── progresso.html                         painel "Meu progresso" (Épico 4)
 ├── css/
 │   ├── style.css                          base / telas de menu
-│   └── jogo.css                           mapa de fases + tela de partida
+│   ├── jogo.css                           mapa de fases + tela de partida
+│   └── recompensas.css                    medalhas, galeria e painel (Épico 4)
 ├── js/
 │   ├── script.js                          tela inicial (avatares, PIN, cadastro)
 │   ├── jogar.js                           mapa de fases
 │   ├── partida.js                         loop de uma partida
+│   ├── painel.js                          tela "Meu progresso"
+│   ├── galeria.js                         Galeria de Conquistas (janela + grade)
+│   ├── pontuacao.js                       regra de pontos e de "jogar de novo" (espelho do banco)
+│   ├── recompensas.js                     medalhas, motor de conquistas, montagem do painel
 │   ├── conteudo.js                        fases e problemas do banco (+ fallback)
 │   ├── fases.js / gerador.js              plano B: fases e contas feitas no navegador
 │   ├── dicas.js                           dicas educativas geradas a partir da conta
 │   ├── creditos.js                        time do projeto + tela de créditos
 │   ├── avatares.js                        SVGs dos rostos dos avatares
-│   ├── progresso.js                       progresso na nuvem + espelho offline
+│   ├── progresso.js                       progresso, painel e conquistas: ida ao banco + espelho offline
 │   ├── sessao.js                          token de sessão (sessionStorage)
 │   ├── reconhecimento.js                  inferência da MLP (JS puro)
 │   ├── modelo-mnist.json                  pesos int8 do modelo (gerado)
@@ -349,9 +546,10 @@ math-kids/
 │   └── (logo da universidade — ver img/LEIA-ME.md)
 ├── supabase/
 │   ├── schema.sql                         tabelas + funções RPC (rodar no SQL Editor)
-│   ├── CONTEUDO.md                        como cadastrar fases/problemas novos
+│   ├── CONTEUDO.md                        como cadastrar fases, problemas e conquistas
 │   └── LEIA-ME.md                         passo a passo da integração
 ├── ferramentas/                           treino do modelo + testes — NÃO vão pro deploy
+│   ├── testar-recompensas.mjs             pontuação, medalhas e conquistas (Épico 4)
 │   ├── testar-conteudo.mjs                camada de conteúdo (Épico 3)
 │   └── testar-dicas.mjs                   dicas educativas (Épico 2)
 ├── vercel.json                            headers de cache
@@ -396,9 +594,15 @@ a proteção real é o RLS sem policies + os `grant execute` restritos do `schem
 
 **RPCs liberadas para o `anon`:** `listar_avatares_ativos`,
 `listar_avatares_disponiveis`, `login_avatar`, `cadastrar_responsavel`,
-`iniciar_sessao`, `carregar_progresso`, `salvar_resultado_fase`, `encerrar_sessao`
-e, do Épico 3, `listar_fases`, `obter_fase`, `listar_fases_progresso`,
-`sortear_problemas`, `fase_liberada`.
+`iniciar_sessao`, `carregar_progresso`, `salvar_resultado_fase`, `encerrar_sessao`,
+`excluir_avatar` e, do Épico 3, `listar_fases`, `obter_fase`, `listar_fases_progresso`,
+`sortear_problemas`, `fase_liberada`; do Épico 4, `registrar_resultado_fase`,
+`consultar_progresso`, `listar_conquistas`, `painel_progresso`.
+
+> **Já tinha o banco instalado?** Rode o `schema.sql` inteiro de novo para
+> ganhar as tabelas e funções do Épico 4. Enquanto isso não for feito o jogo
+> continua funcionando: salva pela RPC antiga e guarda medalhas e conquistas
+> só no dispositivo.
 
 ---
 
@@ -475,6 +679,11 @@ sozinha. Esta tabela do README é a mesma informação em formato de leitura.
 
 - **PIN de 4 dígitos sem rate-limit no servidor** — força bruta online é viável; o
   alvo é uso escolar de baixo risco (as RPCs não expõem dados pessoais).
+- **Excluir avatar não pede credencial** — a única barreira é a confirmação na
+  tela. Qualquer pessoa na tela inicial consegue excluir qualquer avatar, e a
+  RPC `excluir_avatar` aceita a chamada de quem tiver o endereço do site. Serve
+  para uso em sala com um adulto por perto; para uso aberto, o caminho é voltar
+  a exigir uma credencial (o lugar está marcado em `supabase/schema.sql`).
 - **`supabase-js` carregado de `esm.sh`**, pinado só na major (`@2`) — rede que
   bloqueia CDNs (comum em escolas) derruba o login. Ideal: vendorizar a lib e pinar
   a versão exata.
@@ -482,3 +691,9 @@ sozinha. Esta tabela do README é a mesma informação em formato de leitura.
   o fluxo; falta a RPC `redefinir_pin`.
 - **Sem áudio** — todo o feedback é visual/textual; leitura em voz alta das contas
   ajudaria quem ainda não lê bem.
+- **Resultado salvo offline não é reenviado depois** — a partida jogada sem
+  internet fica no espelho do dispositivo (e conta para liberar fases ali), mas
+  o servidor só fica sabendo quando a criança jogar aquela fase de novo com
+  rede. Falta uma fila de reenvio.
+- **Selo "NOVA!" é por dispositivo** — quais conquistas a criança já viu fica
+  em `localStorage`; em outro tablet o selo aparece de novo.

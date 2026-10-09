@@ -196,6 +196,8 @@ create table if not exists sessoes (
 create index if not exists idx_sessoes_avatar on sessoes(avatar_id);
 
 -- Uma linha por (avatar, fase). Guarda sempre o MELHOR desempenho.
+-- (Desde o Épico 4 a tabela em uso é `progresso_avatar`, criada mais abaixo.
+--  Esta ficou só como origem da migração: nada mais lê nem escreve nela.)
 create table if not exists progresso (
   avatar_id      uuid not null references avatares(id) on delete cascade,
   fase           int  not null,
@@ -1415,36 +1417,1253 @@ end;
 $valida$;
 
 -- =========================================================================
--- Excluir avatar (Área do responsável)
+-- Épico 4 — Progresso, Pontuação e Recompensas (histórias 6.1 a 6.7)
+-- =========================================================================
+-- Por que esta seção existe:
+--   Até aqui o banco guardava só "estrelas e melhor pontuação" e acreditava
+--   nos números que o navegador mandava. Agora o servidor passa a ser o dono
+--   das três coisas que a criança ganha ao terminar uma fase:
+--
+--     PONTOS      a regra de pontuação mora aqui (pontos_do_acerto) e o
+--                 servidor REFAZ a conta da partida a partir das respostas;
+--     MEDALHA     bronze / prata / ouro, saindo das MESMAS metas das
+--                 estrelas — as duas nunca se contradizem;
+--     CONQUISTAS  regras cadastradas como DADO (tabela `conquistas`), que um
+--                 motor genérico avalia a cada progresso salvo.
+--
+--   O progresso muda de casa: `progresso_avatar` assume o lugar da
+--   `progresso` lá de cima e ganha tempo, erros, medalha e data de
+--   conclusão. As RPCs antigas continuam com o MESMO nome e o MESMO formato
+--   de resposta — o front que já está publicado segue funcionando.
+--
+--   Segurança no padrão do resto do arquivo: dado de avatar fica atrás de
+--   RLS SEM policy e só sai pelas funções abaixo, que descobrem o avatar
+--   pelo token da sessão. E continua IDEMPOTENTE: rodar de novo não duplica
+--   conquista, não repete migração e não estoura erro.
+-- =========================================================================
+
+-- -------------------------------------------------------------------------
+-- Tabelas com o mesmo nome vindas de um rascunho antigo
+-- Mesmo cuidado que a `fases` pediu no Épico 3: se já existir uma tabela
+-- com um destes nomes em OUTRO formato, o `create table if not exists`
+-- pularia a criação e as funções quebrariam só na hora de jogar. Em vez de
+-- apagar, a antiga vira `<nome>_legado` — nada se perde.
+-- -------------------------------------------------------------------------
+do $legado_e4$
+declare
+  v_tabela  text;
+  v_legado  text;
+  v_serve   boolean;
+  r         record;
+begin
+  foreach v_tabela in array array['progresso_avatar', 'conquistas', 'conquistas_avatar'] loop
+    continue when to_regclass('public.' || v_tabela) is null;
+
+    -- "serve" = as colunas-chave existem com o tipo que este script usa
+    select count(*) = case v_tabela when 'conquistas' then 3 else 2 end
+      into v_serve
+    from information_schema.columns c
+    where c.table_schema = 'public' and c.table_name = v_tabela
+      and (c.column_name::text, c.data_type::text) in (
+            select x.coluna, x.tipo
+            from (values
+              ('progresso_avatar',  'avatar_id',     'uuid'),
+              ('progresso_avatar',  'fase_id',       'integer'),
+              ('conquistas',        'id',            'integer'),
+              ('conquistas',        'codigo',        'text'),
+              ('conquistas',        'criterio_tipo', 'text'),
+              ('conquistas_avatar', 'avatar_id',     'uuid'),
+              ('conquistas_avatar', 'conquista_id',  'integer')
+            ) as x(tabela, coluna, tipo)
+            where x.tabela = v_tabela);
+    continue when v_serve;
+
+    v_legado := v_tabela || '_legado';
+    if to_regclass('public.' || v_legado) is not null then
+      raise exception 'Existe uma tabela % antiga (outro formato) e já existe %. Resolva à mão antes de rodar.',
+        v_tabela, v_legado;
+    end if;
+
+    execute format('alter table public.%I rename to %I', v_tabela, v_legado);
+    -- nomes de constraint/índice são por schema: sem isto o `<tabela>_pkey`
+    -- antigo colide com o da tabela nova
+    for r in
+      select conname from pg_constraint
+      where conrelid = format('public.%I', v_legado)::regclass
+        and left(conname, length(v_tabela) + 1) = v_tabela || '_'
+        and left(conname, length(v_legado) + 1) <> v_legado || '_'
+    loop
+      execute format('alter table public.%I rename constraint %I to %I',
+                     v_legado, r.conname,
+                     v_legado || '_' || substr(r.conname, length(v_tabela) + 2));
+    end loop;
+    for r in
+      select c.relname as nome
+      from pg_index i join pg_class c on c.oid = i.indexrelid
+      where i.indrelid = format('public.%I', v_legado)::regclass
+        and left(c.relname, length(v_tabela) + 1) = v_tabela || '_'
+        and left(c.relname, length(v_legado) + 1) <> v_legado || '_'
+    loop
+      execute format('alter index public.%I rename to %I',
+                     r.nome, v_legado || '_' || substr(r.nome, length(v_tabela) + 2));
+    end loop;
+    raise notice 'Tabela % antiga renomeada para %.', v_tabela, v_legado;
+  end loop;
+end;
+$legado_e4$;
+
+-- -------------------------------------------------------------------------
+-- Tabelas novas
+-- -------------------------------------------------------------------------
+
+-- História 6.3 — uma linha por (avatar, fase), sempre com o MELHOR que a
+-- criança já fez naquela fase. É a regra de "jogar de novo" do projeto:
+-- repetir uma fase nunca piora o que está guardado.
+--   estrelas / pontuacao / acertos / melhor_combo -> o maior valor já feito
+--   erros / tempo_gasto  -> o menor, e só de partida em que a fase foi
+--                           concluída (nulo enquanto ela não for)
+--   data_conclusao       -> a PRIMEIRA vez que a fase foi concluída
+--   tentativas           -> quantas partidas terminadas (aqui sim acumula)
+-- `erros` conta resposta errada E tempo estourado; por isso erros = 0 quer
+-- dizer "acertou todas de primeira".
+create table if not exists progresso_avatar (
+  avatar_id        uuid not null references avatares(id) on delete cascade,
+  fase_id          int  not null,           -- casa com fases.id (sem FK: fase fora do catálogo não trava ninguém)
+  concluida        boolean not null default false,
+  estrelas         int  not null default 0 check (estrelas between 0 and 3),
+  nivel_recompensa text check (nivel_recompensa in ('bronze', 'prata', 'ouro')),
+  pontuacao        int  not null default 0 check (pontuacao >= 0),  -- erro nunca tira ponto
+  acertos          int  not null default 0 check (acertos >= 0),
+  erros            int  check (erros >= 0),
+  total_questoes   int  not null default 0,
+  tempo_gasto      int  check (tempo_gasto >= 0),                  -- segundos
+  melhor_combo     int  not null default 0 check (melhor_combo >= 0),
+  tentativas       int  not null default 0,
+  data_conclusao   timestamptz,
+  atualizado_em    timestamptz not null default now(),
+  primary key (avatar_id, fase_id)
+);
+
+-- História 6.4 — o catálogo de conquistas. A REGRA de cada uma é dado:
+-- `criterio_tipo` aponta para uma métrica de metricas_do_avatar() e
+-- `criterio_valor` é o quanto ela precisa valer. Conquista nova = um insert
+-- (veja supabase/CONTEUDO.md), sem mexer em função nem em JavaScript.
+create table if not exists conquistas (
+  id              int generated always as identity primary key,
+  codigo          text not null unique,     -- apelido estável; o front usa para casar com o espelho offline
+  nome            text not null,
+  descricao       text not null,            -- frase lúdica mostrada na galeria
+  icone           text not null,            -- emoji
+  cor             text not null default '#FFD400',
+  criterio_tipo   text not null,
+  criterio_valor  numeric not null check (criterio_valor > 0),
+  ordem           int  not null default 0,
+  ativo           boolean not null default true,
+  criado_em       timestamptz not null default now()
+);
+
+-- O que cada avatar já desbloqueou, e quando. Conquista é para sempre: se a
+-- regra mudar depois, quem já ganhou continua com ela.
+create table if not exists conquistas_avatar (
+  avatar_id         uuid not null references avatares(id) on delete cascade,
+  conquista_id      int  not null references conquistas(id) on delete cascade,
+  data_desbloqueio  timestamptz not null default now(),
+  primary key (avatar_id, conquista_id)
+);
+
+-- -------------------------------------------------------------------------
+-- RLS
+-- progresso_avatar e conquistas_avatar são dado DE UM avatar: RLS ligado e
+-- nenhuma policy, como em `sessoes`. Não existe login do Supabase Auth neste
+-- jogo (a criança entra com avatar + PIN), então não há `auth.uid()` para
+-- escrever uma policy por linha: o isolamento por avatar é feito nas
+-- funções, que resolvem o avatar pelo token e filtram por ele. O revoke é
+-- redundância — mesmo que alguém crie uma policy por engano, a chave pública
+-- continua sem permissão na tabela.
+-- `conquistas` é catálogo (igual a `fases`): leitura pública, escrita só
+-- pelo SQL Editor.
+-- -------------------------------------------------------------------------
+alter table progresso_avatar  enable row level security;
+alter table conquistas_avatar enable row level security;
+alter table conquistas        enable row level security;
+
+revoke all on progresso_avatar, conquistas_avatar from anon, authenticated;
+
+drop policy if exists conquistas_leitura_publica on conquistas;
+create policy conquistas_leitura_publica on conquistas
+  for select to anon, authenticated using (ativo);
+
+grant select on conquistas to anon, authenticated;
+
+-- -------------------------------------------------------------------------
+-- História 6.1 — a regra de pontuação
+--
+--   pontos de UM acerto = base + combo + tempo
+--     base   100 se acertou de primeira | 60 na 2ª tentativa | 30 da 3ª em diante
+--     combo  10 × acertos seguidos antes deste (no máximo 8, ou seja, +80)
+--     tempo  só em fase com cronômetro: até 40, proporcional ao tempo que sobrou
+--
+--   Errar NUNCA tira ponto: não existe parcela negativa. O erro só zera o
+--   combo e faz o próximo acerto valer a base menor.
+--
+--   Os números são inteiros de propósito (o tempo vem em DÉCIMOS de segundo):
+--   js/pontuacao.js faz exatamente a mesma conta para mostrar o placar ao
+--   vivo, e com inteiro os dois lados chegam sempre no mesmo resultado.
+--   Mudou a regra aqui? Mude lá também.
+-- -------------------------------------------------------------------------
+create or replace function pontos_do_acerto(
+  p_tentativa      int,   -- em qual tentativa acertou (1 = de primeira)
+  p_combo          int,   -- acertos seguidos ANTES deste
+  p_restante_dseg  int,   -- décimos de segundo que sobraram no cronômetro
+  p_tempo_seg      int    -- cronômetro da fase em segundos (0 = sem cronômetro)
+)
+returns int
+language sql
+immutable
+set search_path = public, extensions
+as $pontos_acerto$
+  select case
+    when coalesce(p_tentativa, 0) < 1 then 0
+    else
+      (case p_tentativa when 1 then 100 when 2 then 60 else 30 end)
+      + 10 * least(greatest(coalesce(p_combo, 0), 0), 8)
+      -- arredonda (restante / tempo) × 40 usando só inteiros
+      + coalesce(
+          (8 * least(greatest(coalesce(p_restante_dseg, 0), 0), p_tempo_seg * 10) + p_tempo_seg)
+            / nullif(2 * greatest(coalesce(p_tempo_seg, 0), 0), 0),
+          0)
+  end;
+$pontos_acerto$;
+
+-- O máximo que uma partida de `p_total` questões pode valer: tudo de
+-- primeira, sem quebrar o combo e com o cronômetro cheio. É o teto de
+-- "pontuação plausível" usado na validação.
+create or replace function pontuacao_maxima(p_total int, p_tempo_seg int)
+returns int
+language sql
+immutable
+set search_path = public, extensions
+as $pontuacao_maxima$
+  select coalesce(sum(pontos_do_acerto(1, g.i - 1, coalesce(p_tempo_seg, 0) * 10, p_tempo_seg)), 0)::int
+  from generate_series(1, greatest(coalesce(p_total, 0), 0)) as g(i);
+$pontuacao_maxima$;
+
+-- Refaz a partida inteira a partir do que o front mandou. `p_respostas` é
+-- um array com um objeto por questão, na ordem em que foram jogadas:
+--   { "t": tentativa em que acertou (0 = não acertou),
+--     "e": tentativas que não deram certo (só importa quando t = 0),
+--     "r": décimos de segundo que sobravam no cronômetro ao acertar }
+-- Devolve o total de pontos e os contadores da partida.
+create or replace function calcular_partida(
+  p_respostas   jsonb,
+  p_tentativas  int,
+  p_tempo_seg   int,
+  out pontos int, out acertos int, out erros int, out melhor_combo int
+)
+language plpgsql
+immutable
+set search_path = public, extensions
+as $calcular_partida$
+declare
+  v_item   jsonb;
+  v_num    numeric;
+  v_t      int;
+  v_e      int;
+  v_r      int;
+  v_combo  int := 0;
+  v_max    int := least(greatest(coalesce(p_tentativas, 3), 1), 10);
+begin
+  pontos := 0; acertos := 0; erros := 0; melhor_combo := 0;
+
+  if p_respostas is null or jsonb_typeof(p_respostas) <> 'array' then
+    raise exception 'Resultado inválido';
+  end if;
+
+  for v_item in
+    select t.item from jsonb_array_elements(p_respostas) with ordinality as t(item, pos)
+    order by t.pos
+  loop
+    if jsonb_typeof(v_item) <> 'object'
+       or jsonb_typeof(v_item -> 't') is distinct from 'number' then
+      raise exception 'Resultado inválido';
+    end if;
+    v_num := (v_item ->> 't')::numeric;
+    if v_num <> trunc(v_num) or v_num < 0 or v_num > v_max then
+      raise exception 'Resultado inválido';
+    end if;
+    v_t := v_num::int;
+
+    if v_t >= 1 then
+      -- acertou na tentativa t: errou t-1 vezes antes, e errar quebra o combo
+      v_e := v_t - 1;
+      if v_e > 0 then
+        v_combo := 0;
+      end if;
+      v_r := 0;
+      if jsonb_typeof(v_item -> 'r') = 'number' then
+        v_r := least(greatest(trunc((v_item ->> 'r')::numeric), 0), 36000)::int;
+      end if;
+      pontos       := pontos + pontos_do_acerto(v_t, v_combo, v_r, p_tempo_seg);
+      v_combo      := v_combo + 1;
+      melhor_combo := greatest(melhor_combo, v_combo);
+      acertos      := acertos + 1;
+    else
+      -- não acertou: gastou as tentativas ou o tempo acabou (no mínimo 1 erro)
+      v_e := v_max;
+      if jsonb_typeof(v_item -> 'e') = 'number' then
+        v_e := least(greatest(trunc((v_item ->> 'e')::numeric), 1), v_max)::int;
+      end if;
+      v_combo := 0;
+    end if;
+
+    erros := erros + v_e;
+  end loop;
+end;
+$calcular_partida$;
+
+-- -------------------------------------------------------------------------
+-- História 6.2 — estrelas e medalha saem do MESMO critério
+--
+-- O critério é o aproveitamento (acertos ÷ total) contra as metas da fase
+-- (fases.meta_uma / meta_duas / meta_tres — dado, não código):
+--     >= meta_uma   1 estrela   medalha de bronze   (fase concluída)
+--     >= meta_duas  2 estrelas  medalha de prata
+--     >= meta_tres  3 estrelas  medalha de ouro
+-- A medalha É a estrela "com outra roupa": nunca existe 3 estrelas com
+-- medalha de prata. Erros e tempo ficam gravados junto e são premiados nas
+-- conquistas (fase sem erro, fase cronometrada), não numa segunda nota que
+-- pudesse contradizer a primeira.
+-- Antes quem calculava as estrelas era o navegador; agora é aqui.
+-- -------------------------------------------------------------------------
+create or replace function estrelas_do_resultado(
+  p_acertos int, p_total int,
+  p_meta_uma numeric, p_meta_duas numeric, p_meta_tres numeric
+)
+returns int
+language sql
+immutable
+set search_path = public, extensions
+as $estrelas_resultado$
+  select case
+           when x.razao >= coalesce(p_meta_tres, 1.0) then 3
+           when x.razao >= coalesce(p_meta_duas, 0.8) then 2
+           when x.razao >= coalesce(p_meta_uma, 0.6) then 1
+           else 0
+         end
+  from (select p_acertos::numeric / nullif(p_total, 0) as razao) as x;
+$estrelas_resultado$;
+
+create or replace function nivel_da_recompensa(p_estrelas int)
+returns text
+language sql
+immutable
+set search_path = public, extensions
+as $nivel_recompensa$
+  select case
+           when p_estrelas >= 3 then 'ouro'
+           when p_estrelas = 2 then 'prata'
+           when p_estrelas = 1 then 'bronze'
+         end;   -- 0 estrelas: sem medalha (null)
+$nivel_recompensa$;
+
+-- -------------------------------------------------------------------------
+-- História 6.4 — o motor de conquistas
+--
+-- metricas_do_avatar() é o ÚNICO lugar que sabe calcular os números de um
+-- avatar. Cada chave do json é um `criterio_tipo` válido. O motor não
+-- conhece nenhuma conquista pelo nome: ele só compara
+--     metrica[criterio_tipo] >= criterio_valor
+-- para cada linha ativa de `conquistas`.
+--
+--   fases_concluidas                fases com 1 estrela ou mais
+--   fases_principais_concluidas     idem, só as da trilha principal
+--   fases_extras_concluidas         idem, só as extras
+--   fases_cronometradas_concluidas  idem, só as que têm cronômetro
+--   percentual_concluido            0..100 — % das fases ativas concluídas
+--   estrelas_total                  soma das estrelas
+--   pontos_total                    soma da melhor pontuação de cada fase
+--   medalhas_ouro                   fases com medalha de ouro
+--   medalhas_prata                  fases com prata OU ouro
+--   fases_perfeitas                 fases concluídas sem nenhum erro
+--   melhor_combo                    maior sequência de acertos numa fase
+--   partidas_jogadas                partidas terminadas (conta repetição)
+-- -------------------------------------------------------------------------
+create or replace function metricas_do_avatar(p_avatar uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $metricas$
+  with catalogo as (
+    select f.id, f.extra, f.tempo_seg from fases f where f.ativo
+  ),
+  meu as (
+    select pa.concluida, pa.estrelas, pa.pontuacao, pa.acertos, pa.erros,
+           pa.total_questoes, pa.melhor_combo, pa.tentativas,
+           c.id is not null           as no_catalogo,
+           coalesce(c.extra, false)   as extra,
+           coalesce(c.tempo_seg, 0)   as tempo_seg
+    from progresso_avatar pa
+    left join catalogo c on c.id = pa.fase_id
+    where pa.avatar_id = p_avatar
+  )
+  select jsonb_build_object(
+    'fases_concluidas',
+      (select count(*) from meu where concluida),
+    'fases_principais_concluidas',
+      (select count(*) from meu where concluida and not extra),
+    'fases_extras_concluidas',
+      (select count(*) from meu where concluida and extra),
+    'fases_cronometradas_concluidas',
+      (select count(*) from meu where concluida and tempo_seg > 0),
+    'percentual_concluido',
+      coalesce((select floor(100.0 * (select count(*) from meu where concluida and no_catalogo)
+                             / nullif((select count(*) from catalogo), 0))), 0),
+    'estrelas_total',
+      (select coalesce(sum(estrelas), 0) from meu),
+    'pontos_total',
+      (select coalesce(sum(pontuacao), 0) from meu),
+    'medalhas_ouro',
+      (select count(*) from meu where estrelas >= 3),
+    'medalhas_prata',
+      (select count(*) from meu where estrelas >= 2),
+    'fases_perfeitas',
+      (select count(*) from meu
+        where concluida and erros = 0 and total_questoes > 0 and acertos >= total_questoes),
+    'melhor_combo',
+      (select coalesce(max(melhor_combo), 0) from meu),
+    'partidas_jogadas',
+      (select coalesce(sum(tentativas), 0) from meu)
+  );
+$metricas$;
+
+-- Desbloqueia o que o avatar já merece e devolve os ids das conquistas que
+-- entraram AGORA. Rodar de novo não repete nada (on conflict do nothing).
+create or replace function avaliar_conquistas(p_avatar uuid)
+returns setof int
+language plpgsql
+security definer
+set search_path = public, extensions
+as $avaliar$
+declare
+  v_metricas jsonb;
+begin
+  if p_avatar is null then
+    return;
+  end if;
+  v_metricas := metricas_do_avatar(p_avatar);
+
+  return query
+    insert into conquistas_avatar (avatar_id, conquista_id)
+    select p_avatar, c.id
+    from conquistas c
+    where c.ativo
+      and coalesce((v_metricas ->> c.criterio_tipo)::numeric, 0) >= c.criterio_valor
+    on conflict do nothing
+    returning conquista_id;
+end;
+$avaliar$;
+
+-- Gatilho 1: todo progresso gravado (por qualquer caminho, inclusive um
+-- ajuste à mão no SQL Editor) reavalia as conquistas daquele avatar.
+create or replace function progresso_dispara_conquistas()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, extensions
+as $gatilho_progresso$
+begin
+  perform avaliar_conquistas(new.avatar_id);
+  return null;
+end;
+$gatilho_progresso$;
+
+create or replace trigger progresso_avatar_avalia_conquistas
+  after insert or update on progresso_avatar
+  for each row execute function progresso_dispara_conquistas();
+
+-- Gatilho 2: conquista cadastrada ou alterada vale também para quem JÁ
+-- tinha cumprido o critério — reavalia todos os avatares com progresso.
+create or replace function conquistas_reavalia_avatares()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, extensions
+as $gatilho_conquistas$
+declare
+  v_avatar uuid;
+begin
+  for v_avatar in select distinct pa.avatar_id from progresso_avatar pa loop
+    perform avaliar_conquistas(v_avatar);
+  end loop;
+  return null;
+end;
+$gatilho_conquistas$;
+
+create or replace trigger conquistas_reavalia
+  after insert or update on conquistas
+  for each statement execute function conquistas_reavalia_avatares();
+
+-- Gatilho 3: recusa `criterio_tipo` que não existe, já dizendo quais valem.
+-- Sem isto um erro de digitação criaria uma conquista que nunca desbloqueia
+-- e ninguém ficaria sabendo.
+create or replace function validar_criterio_da_conquista()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, extensions
+as $valida_criterio$
+declare
+  v_tipos jsonb := metricas_do_avatar(null);
+begin
+  if not (v_tipos ? new.criterio_tipo) then
+    raise exception 'criterio_tipo "%" não existe. Use um destes: %',
+      new.criterio_tipo,
+      (select string_agg(k, ', ' order by k) from jsonb_object_keys(v_tipos) as t(k));
+  end if;
+  return new;
+end;
+$valida_criterio$;
+
+create or replace trigger conquistas_valida_criterio
+  before insert or update on conquistas
+  for each row execute function validar_criterio_da_conquista();
+
+-- -------------------------------------------------------------------------
+-- Seed das conquistas — espelho fiel de CONQUISTAS_PADRAO em
+-- js/recompensas.js (é o que a galeria mostra quando o banco não responde).
+-- `on conflict do nothing`: rodar de novo não sobrescreve o que o grupo
+-- tiver ajustado à mão.
+-- -------------------------------------------------------------------------
+insert into conquistas (codigo, nome, descricao, icone, cor, criterio_tipo, criterio_valor, ordem) values
+  ('primeiro_passo',    'Primeiro passo',    'Sua primeira fase concluída! Toda grande aventura começa assim.', '🌱', '#7ED957', 'fases_concluidas',               1,    1),
+  ('rumo_certo',        'Rumo certo',        'Cinco fases concluídas: você já conhece o caminho.',              '🧭', '#4CC9F0', 'fases_concluidas',               5,    2),
+  ('coroa_da_trilha',   'Coroa da trilha',   'As dez fases da trilha principal concluídas. Que jornada!',       '👑', '#FFD23F', 'fases_principais_concluidas',    10,   3),
+  ('lenda_math_kids',   'Lenda do Math Kids','Todas as fases concluídas, incluindo as extras. Lendário!',       '🏆', '#FFD400', 'percentual_concluido',           100,  4),
+  ('surpresa_extra',    'Surpresa extra',    'Uma fase extra concluída: quem procura desafio, acha!',           '🎁', '#B892FF', 'fases_extras_concluidas',        1,    5),
+  ('contra_o_relogio',  'Contra o relógio',  'Uma fase com cronômetro concluída. Nem o relógio te segura!',     '⚡', '#FF9A3D', 'fases_cronometradas_concluidas', 1,    6),
+  ('chuva_de_estrelas', 'Chuva de estrelas', 'Dez estrelas na coleção. Está chovendo estrela!',                 '⭐', '#FFD23F', 'estrelas_total',                 10,   7),
+  ('ceu_estrelado',     'Céu estrelado',     'Vinte e cinco estrelas: dá para iluminar o céu inteiro.',         '🌟', '#4CC9F0', 'estrelas_total',                 25,   8),
+  ('brilho_dourado',    'Brilho dourado',    'Sua primeira medalha de ouro. Como brilha!',                      '🥇', '#FFD400', 'medalhas_ouro',                  1,    9),
+  ('colecao_dourada',   'Coleção dourada',   'Cinco medalhas de ouro. Vai faltar prateleira!',                  '🏅', '#FF9A3D', 'medalhas_ouro',                  5,    10),
+  ('tudo_certinho',     'Tudo certinho',     'Uma fase inteira acertando todas de primeira.',                   '💯', '#FF6F91', 'fases_perfeitas',                1,    11),
+  ('pegando_fogo',      'Pegando fogo',      'Cinco acertos seguidos na mesma fase. Que sequência!',            '🔥', '#FF6F91', 'melhor_combo',                   5,    12),
+  ('mil_pontos',        'Mil pontos',        'Mil pontos somados. O placar não para de subir!',                 '🎯', '#2EC4B6', 'pontos_total',                   1000, 13),
+  ('cofre_cheio',       'Cofre cheio',       'Cinco mil pontos guardados. Haja cofrinho!',                      '💰', '#7ED957', 'pontos_total',                   5000, 14),
+  ('nao_desisto',       'Não desisto nunca', 'Dez partidas jogadas. Treinar é o que deixa a gente fera!',       '💪', '#B892FF', 'partidas_jogadas',               10,   15)
+on conflict (codigo) do nothing;
+
+-- -------------------------------------------------------------------------
+-- Migração: o que estava em `progresso` vem para `progresso_avatar`
+--
+-- Cópia, não mudança: as linhas antigas ficam onde estavam, só marcadas com
+-- `migrado_e4`. A marca é o que garante "uma vez só" — sem ela, zerar
+-- progresso_avatar (virada de turma, por exemplo) e rodar este arquivo de
+-- novo ressuscitaria as estrelas antigas.
+-- A base antiga não guardava erros nem tempo: essas colunas ficam nulas até
+-- a criança jogar a fase de novo. Como data de conclusão vale a última
+-- atualização que existia. O gatilho acima já entrega as conquistas de
+-- quem tinha progresso.
+-- -------------------------------------------------------------------------
+do $migra_progresso$
+declare
+  v_copiadas int;
+begin
+  if to_regclass('public.progresso') is null then
+    return;
+  end if;
+
+  alter table public.progresso add column if not exists migrado_e4 boolean not null default false;
+
+  with pendentes as (
+    update public.progresso set migrado_e4 = true
+    where not migrado_e4
+    returning avatar_id, fase, estrelas, melhor_pontos, melhor_acertos,
+              total_questoes, concluida, tentativas, atualizado_em
+  )
+  insert into progresso_avatar as pa
+    (avatar_id, fase_id, concluida, estrelas, nivel_recompensa, pontuacao, acertos,
+     total_questoes, tentativas, data_conclusao, atualizado_em)
+  select m.avatar_id, m.fase, (m.concluida or m.estrelas >= 1), m.estrelas,
+         nivel_da_recompensa(m.estrelas), greatest(m.melhor_pontos, 0),
+         greatest(m.melhor_acertos, 0), m.total_questoes, m.tentativas,
+         case when m.concluida or m.estrelas >= 1 then m.atualizado_em end,
+         m.atualizado_em
+  from pendentes m
+  on conflict (avatar_id, fase_id) do update set
+    concluida        = pa.concluida or excluded.concluida,
+    estrelas         = greatest(pa.estrelas, excluded.estrelas),
+    nivel_recompensa = nivel_da_recompensa(greatest(pa.estrelas, excluded.estrelas)),
+    pontuacao        = greatest(pa.pontuacao, excluded.pontuacao),
+    acertos          = greatest(pa.acertos, excluded.acertos),
+    tentativas       = greatest(pa.tentativas, excluded.tentativas),
+    data_conclusao   = coalesce(pa.data_conclusao, excluded.data_conclusao);
+
+  get diagnostics v_copiadas = row_count;
+  if v_copiadas > 0 then
+    raise notice 'Épico 4: % linha(s) de progresso copiadas para progresso_avatar.', v_copiadas;
+  end if;
+
+  comment on table public.progresso is
+    'LEGADO (até o Épico 3). O jogo usa progresso_avatar; esta tabela ficou só como origem da migração.';
+end;
+$migra_progresso$;
+
+-- -------------------------------------------------------------------------
+-- Gravação (uso interno — quem chama são as RPCs com token, mais abaixo)
+--
+-- Tudo acontece dentro desta função, ou seja, numa transação só: valida,
+-- calcula estrelas e medalha, grava o progresso e (pelo gatilho) desbloqueia
+-- as conquistas. Se qualquer parte falhar, nada fica gravado pela metade.
+--
+-- Limites plausíveis conferidos aqui:
+--   - total de questões entre 1 e 30 e, se a fase está no catálogo, IGUAL
+--     ao qtd_questoes dela;
+--   - acertos entre 0 e o total; erros entre 0 e total × tentativas;
+--   - pontuação nunca negativa e nunca acima de pontuacao_maxima();
+--   - tempo entre 1 s por questão e 1 hora (fora disso é ajustado, não
+--     recusado: tablet esquecido ligado não pode custar o progresso);
+--   - fase bloqueada não grava (regra do Épico 3).
+-- -------------------------------------------------------------------------
+create or replace function gravar_resultado(
+  p_avatar        uuid,
+  p_fase_id       int,
+  p_pontos        int,
+  p_acertos       int,
+  p_erros         int,   -- nulo quando quem chama é o front antigo
+  p_total         int,
+  p_tempo_gasto   int,   -- idem
+  p_melhor_combo  int    -- idem
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $gravar$
+declare
+  v_fase       fases%rowtype;
+  v_antes      progresso_avatar%rowtype;
+  v_depois     progresso_avatar%rowtype;
+  v_ja_tinha   int[];
+  v_tentativas int := 3;
+  v_tempo_seg  int := 0;
+  v_estrelas   int;
+  v_pontos     int;
+  v_tempo      int;
+  v_combo      int;
+begin
+  if p_avatar is null then
+    raise exception 'Sessão inválida ou expirada';
+  end if;
+  if p_fase_id is null or p_fase_id < 1 or p_fase_id > 999 then
+    raise exception 'Fase inválida';
+  end if;
+  if p_total is null or p_total <= 0 or p_total > 30
+     or p_acertos is null or p_acertos < 0 or p_acertos > p_total then
+    raise exception 'Resultado inválido';
+  end if;
+
+  select * into v_fase from fases f where f.id = p_fase_id and f.ativo;
+  if found then
+    if p_total <> v_fase.qtd_questoes then
+      raise exception 'Resultado inválido';
+    end if;
+    v_tentativas := v_fase.tentativas;
+    v_tempo_seg  := v_fase.tempo_seg;
+  end if;
+  -- fase fora do catálogo: mesma tolerância do Épico 3 (metas e regras padrão)
+
+  if p_erros is not null and (p_erros < 0 or p_erros > p_total * greatest(v_tentativas, 1)) then
+    raise exception 'Resultado inválido';
+  end if;
+  if not fase_liberada_para(p_avatar, p_fase_id) then
+    raise exception 'Fase bloqueada';
+  end if;
+
+  v_pontos   := least(greatest(coalesce(p_pontos, 0), 0), pontuacao_maxima(p_total, v_tempo_seg));
+  -- (greatest/least ignoram nulo, então o "sem tempo" precisa do case)
+  v_tempo    := case when p_tempo_gasto is not null
+                     then least(greatest(p_tempo_gasto, p_total), 3600) end;
+  v_combo    := least(greatest(coalesce(p_melhor_combo, 0), 0), p_total);
+  v_estrelas := estrelas_do_resultado(p_acertos, p_total,
+                                      v_fase.meta_uma, v_fase.meta_duas, v_fase.meta_tres);
+
+  -- como estava ANTES, para dizer ao front o que esta partida mudou
+  select * into v_antes
+  from progresso_avatar pa
+  where pa.avatar_id = p_avatar and pa.fase_id = p_fase_id
+  for update;
+
+  select coalesce(array_agg(ca.conquista_id), '{}'::int[]) into v_ja_tinha
+  from conquistas_avatar ca
+  where ca.avatar_id = p_avatar;
+
+  insert into progresso_avatar as pa
+    (avatar_id, fase_id, concluida, estrelas, nivel_recompensa, pontuacao, acertos,
+     erros, total_questoes, tempo_gasto, melhor_combo, tentativas,
+     data_conclusao, atualizado_em)
+  values
+    (p_avatar, p_fase_id, v_estrelas >= 1, v_estrelas, nivel_da_recompensa(v_estrelas),
+     v_pontos, p_acertos,
+     case when v_estrelas >= 1 then p_erros end,   -- erros e tempo só contam em fase concluída
+     p_total,
+     case when v_estrelas >= 1 then v_tempo end,
+     v_combo, 1,
+     case when v_estrelas >= 1 then now() end, now())
+  on conflict (avatar_id, fase_id) do update set
+    concluida        = pa.concluida or excluded.concluida,
+    estrelas         = greatest(pa.estrelas, excluded.estrelas),
+    nivel_recompensa = nivel_da_recompensa(greatest(pa.estrelas, excluded.estrelas)),
+    pontuacao        = greatest(pa.pontuacao, excluded.pontuacao),
+    acertos          = greatest(pa.acertos, excluded.acertos),
+    erros            = least(pa.erros, excluded.erros),              -- least/greatest ignoram nulo
+    total_questoes   = excluded.total_questoes,
+    tempo_gasto      = least(pa.tempo_gasto, excluded.tempo_gasto),
+    melhor_combo     = greatest(pa.melhor_combo, excluded.melhor_combo),
+    tentativas       = pa.tentativas + 1,
+    data_conclusao   = coalesce(pa.data_conclusao, excluded.data_conclusao),
+    atualizado_em    = now()
+  returning pa.* into v_depois;
+  -- (o gatilho progresso_avatar_avalia_conquistas já rodou aqui)
+
+  return jsonb_build_object(
+    'partida', jsonb_build_object(
+      'fase_id',            p_fase_id,
+      'pontuacao',          v_pontos,
+      'acertos',            p_acertos,
+      'erros',              p_erros,
+      'total_questoes',     p_total,
+      'tempo_gasto',        v_tempo,
+      'melhor_combo',       v_combo,
+      'estrelas',           v_estrelas,
+      'nivel_recompensa',   nivel_da_recompensa(v_estrelas),
+      'concluida',          v_estrelas >= 1,
+      'recorde',            v_pontos > coalesce(v_antes.pontuacao, 0),
+      'primeira_conclusao', v_estrelas >= 1 and not coalesce(v_antes.concluida, false),
+      'subiu_de_medalha',   v_estrelas > coalesce(v_antes.estrelas, 0)
+    ),
+    'progresso', jsonb_build_object(
+      'fase_id',          v_depois.fase_id,
+      'concluida',        v_depois.concluida,
+      'estrelas',         v_depois.estrelas,
+      'nivel_recompensa', v_depois.nivel_recompensa,
+      'pontuacao',        v_depois.pontuacao,
+      'acertos',          v_depois.acertos,
+      'erros',            v_depois.erros,
+      'total_questoes',   v_depois.total_questoes,
+      'tempo_gasto',      v_depois.tempo_gasto,
+      'melhor_combo',     v_depois.melhor_combo,
+      'tentativas',       v_depois.tentativas,
+      'data_conclusao',   v_depois.data_conclusao
+    ),
+    'novas_conquistas', (
+      select coalesce(jsonb_agg(t.item order by t.pos), '[]'::jsonb)
+      from jsonb_array_elements(conquistas_do_avatar(p_avatar)) with ordinality as t(item, pos)
+      where (t.item ->> 'desbloqueada')::boolean
+        and not ((t.item ->> 'id')::int = any (v_ja_tinha))
+    )
+  );
+end;
+$gravar$;
+
+-- -------------------------------------------------------------------------
+-- Consultas (uso interno — recebem o avatar já resolvido pelo token)
+-- Cada uma devolve um pedaço do painel; as RPCs públicas só as combinam.
+-- São leves: no máximo uma linha por fase ou por conquista, sempre pela
+-- chave primária (avatar_id, ...).
+-- -------------------------------------------------------------------------
+
+-- Todas as conquistas ativas + o estado daquele avatar. `valor_atual` é
+-- quanto a métrica vale hoje — a galeria usa para mostrar "3 de 5".
+create or replace function conquistas_do_avatar(p_avatar uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $conquistas_avatar$
+  select coalesce(jsonb_agg(
+           jsonb_build_object(
+             'id',               c.id,
+             'codigo',           c.codigo,
+             'nome',             c.nome,
+             'descricao',        c.descricao,
+             'icone',            c.icone,
+             'cor',              c.cor,
+             'criterio_tipo',    c.criterio_tipo,
+             'criterio_valor',   c.criterio_valor,
+             'ordem',            c.ordem,
+             'valor_atual',      coalesce((m.metricas ->> c.criterio_tipo)::numeric, 0),
+             'desbloqueada',     ca.conquista_id is not null,
+             'data_desbloqueio', ca.data_desbloqueio
+           ) order by c.ordem, c.id), '[]'::jsonb)
+  from conquistas c
+  cross join (select metricas_do_avatar(p_avatar) as metricas) m
+  left join conquistas_avatar ca on ca.conquista_id = c.id and ca.avatar_id = p_avatar
+  where c.ativo;
+$conquistas_avatar$;
+
+-- A trilha inteira com o que o avatar fez em cada fase (inclusive as que
+-- ele ainda nem jogou). O status usa a mesma fase_liberada_para() do menu.
+create or replace function fases_do_avatar(p_avatar uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $fases_avatar$
+  select coalesce(jsonb_agg(
+           jsonb_build_object(
+             'fase_id',          f.id,
+             'ordem',            f.ordem,
+             'nome',             f.nome,
+             'icone',            f.icone,
+             'cor',              f.cor,
+             'extra',            f.extra,
+             'status',           case
+                                   when coalesce(pa.concluida, false) then 'concluida'
+                                   when fase_liberada_para(p_avatar, f.id) then 'liberada'
+                                   else 'bloqueada'
+                                 end,
+             'concluida',        coalesce(pa.concluida, false),
+             'estrelas',         coalesce(pa.estrelas, 0),
+             'nivel_recompensa', pa.nivel_recompensa,
+             'pontuacao',        coalesce(pa.pontuacao, 0),
+             'acertos',          coalesce(pa.acertos, 0),
+             'erros',            pa.erros,
+             'total_questoes',   f.qtd_questoes,
+             'tempo_gasto',      pa.tempo_gasto,
+             'melhor_combo',     coalesce(pa.melhor_combo, 0),
+             'tentativas',       coalesce(pa.tentativas, 0),
+             'data_conclusao',   pa.data_conclusao
+           ) order by f.ordem), '[]'::jsonb)
+  from fases f
+  left join progresso_avatar pa on pa.avatar_id = p_avatar and pa.fase_id = f.id
+  where f.ativo;
+$fases_avatar$;
+
+-- Os números do topo do painel (história 6.5).
+-- Regra da pontuação total: é a SOMA DA MELHOR pontuação de cada fase. Jogar
+-- a mesma fase de novo só aumenta o total se bater o recorde dela — repetir
+-- uma fase fácil cem vezes não vira pontuação infinita.
+-- `fase_atual` é a primeira fase liberada e ainda não concluída (nulo quando
+-- a criança já concluiu tudo).
+create or replace function resumo_do_avatar(p_avatar uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public, extensions
+as $resumo_avatar$
+  with trilha as (
+    select f.id, f.ordem, f.nome, f.icone, f.cor,
+           coalesce(pa.concluida, false) as concluida,
+           coalesce(pa.estrelas, 0)      as estrelas
+    from fases f
+    left join progresso_avatar pa on pa.avatar_id = p_avatar and pa.fase_id = f.id
+    where f.ativo
+  )
+  select jsonb_build_object(
+    'fases_total',      (select count(*) from trilha),
+    'fases_concluidas', (select count(*) from trilha where concluida),
+    'estrelas',         (select coalesce(sum(estrelas), 0) from trilha),
+    'estrelas_max',     (select count(*) * 3 from trilha),
+    'pontuacao_total',  (select coalesce(sum(pa.pontuacao), 0)
+                         from progresso_avatar pa where pa.avatar_id = p_avatar),
+    'medalhas', jsonb_build_object(
+      'ouro',   (select count(*) from trilha where estrelas >= 3),
+      'prata',  (select count(*) from trilha where estrelas = 2),
+      'bronze', (select count(*) from trilha where estrelas = 1)
+    ),
+    'fase_atual', (
+      select jsonb_build_object('fase_id', t.id, 'ordem', t.ordem, 'nome', t.nome,
+                                'icone', t.icone, 'cor', t.cor)
+      from trilha t
+      where not t.concluida and fase_liberada_para(p_avatar, t.id)
+      order by t.ordem
+      limit 1
+    ),
+    'conquistas_total', (select count(*) from conquistas c where c.ativo),
+    'conquistas_desbloqueadas', (
+      select count(*)
+      from conquistas_avatar ca
+      join conquistas c on c.id = ca.conquista_id
+      where ca.avatar_id = p_avatar and c.ativo
+    )
+  );
+$resumo_avatar$;
+
+-- -------------------------------------------------------------------------
+-- RPCs do Épico 4 (chamadas pelo front via supabase.rpc)
+-- -------------------------------------------------------------------------
+
+-- 14) Grava o resultado de uma fase concluída (história 6.3 — o "POST").
+--     O front manda as respostas da partida e o tempo; pontos, estrelas e
+--     medalha são calculados AQUI. Devolve o que a tela de fim precisa:
+--       { partida:   o que esta partida valeu (+ recorde / primeira_conclusao),
+--         progresso: como ficou o melhor resultado guardado da fase,
+--         novas_conquistas: [ ... ]  o que desbloqueou agora }
+create or replace function registrar_resultado_fase(
+  p_token        text,
+  p_fase_id      int,
+  p_respostas    jsonb,
+  p_tempo_gasto  int default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $registrar$
+declare
+  v_avatar      uuid := avatar_da_sessao(p_token);
+  v_tentativas  int;
+  v_tempo_seg   int;
+  v_total       int;
+  v_calc        record;
+begin
+  if v_avatar is null then
+    raise exception 'Sessão inválida ou expirada';
+  end if;
+  if p_respostas is null or jsonb_typeof(p_respostas) <> 'array' then
+    raise exception 'Resultado inválido';
+  end if;
+  v_total := jsonb_array_length(p_respostas);
+  if v_total < 1 or v_total > 30 then
+    raise exception 'Resultado inválido';
+  end if;
+
+  select f.tentativas, f.tempo_seg into v_tentativas, v_tempo_seg
+  from fases f
+  where f.id = p_fase_id and f.ativo;
+
+  select * into v_calc from calcular_partida(p_respostas, v_tentativas, v_tempo_seg);
+
+  return gravar_resultado(v_avatar, p_fase_id, v_calc.pontos, v_calc.acertos, v_calc.erros,
+                          v_total, p_tempo_gasto, v_calc.melhor_combo);
+end;
+$registrar$;
+
+-- 15) Progresso do avatar (história 6.3 — o "GET"): resumo + fase a fase.
+create or replace function consultar_progresso(p_token text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public, extensions
+as $consultar$
+declare
+  v_avatar uuid := avatar_da_sessao(p_token);
+begin
+  if v_avatar is null then
+    raise exception 'Sessão inválida ou expirada';
+  end if;
+  return jsonb_build_object(
+    'resumo', resumo_do_avatar(v_avatar),
+    'fases',  fases_do_avatar(v_avatar));
+end;
+$consultar$;
+
+-- 16) Todas as conquistas + o que aquele avatar já desbloqueou (6.4 / 6.6).
+create or replace function listar_conquistas(p_token text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public, extensions
+as $listar_conquistas$
+declare
+  v_avatar uuid := avatar_da_sessao(p_token);
+begin
+  if v_avatar is null then
+    raise exception 'Sessão inválida ou expirada';
+  end if;
+  return conquistas_do_avatar(v_avatar);
+end;
+$listar_conquistas$;
+
+-- 17) O painel inteiro numa chamada só (história 6.7): fases, pontuação e
+--     recompensas juntas, para a tela "Meu progresso" não fazer três idas
+--     ao banco.
+create or replace function painel_progresso(p_token text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public, extensions
+as $painel$
+declare
+  v_avatar uuid := avatar_da_sessao(p_token);
+begin
+  if v_avatar is null then
+    raise exception 'Sessão inválida ou expirada';
+  end if;
+  return jsonb_build_object(
+    'resumo',     resumo_do_avatar(v_avatar),
+    'fases',      fases_do_avatar(v_avatar),
+    'conquistas', conquistas_do_avatar(v_avatar));
+end;
+$painel$;
+
+-- -------------------------------------------------------------------------
+-- As funções que já existiam passam a ler e gravar em progresso_avatar.
+-- Cada create or replace abaixo substitui a versão definida lá em cima e
+-- mantém nome, parâmetros e colunas de retorno — por isso o front antigo
+-- não percebe a troca.
+-- -------------------------------------------------------------------------
+
+create or replace function fase_liberada_para(p_avatar uuid, p_fase_id int)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, extensions
+as $liberada_para_e4$
+declare
+  v_ordem     int;
+  v_anterior  int;
+begin
+  select f.ordem into v_ordem
+  from fases f
+  where f.id = p_fase_id and f.ativo;
+
+  if v_ordem is null then
+    return true;              -- fase fora do catálogo: compatibilidade
+  end if;
+  if v_ordem <= 1 then
+    return true;              -- a primeira fase está sempre aberta
+  end if;
+
+  select f.id into v_anterior
+  from fases f
+  where f.ordem = v_ordem - 1 and f.ativo;
+
+  if v_anterior is null then
+    return true;              -- fase anterior desativada: não trava a criança
+  end if;
+
+  return exists (
+    select 1 from progresso_avatar pa
+    where pa.avatar_id = p_avatar
+      and pa.fase_id = v_anterior
+      and pa.concluida
+  );
+end;
+$liberada_para_e4$;
+
+create or replace function carregar_progresso(p_token text)
+returns table (
+  fase int, estrelas int, melhor_pontos int,
+  melhor_acertos int, total_questoes int, concluida boolean, tentativas int
+)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $carregar_e4$
+declare
+  v_avatar uuid := avatar_da_sessao(p_token);
+begin
+  if v_avatar is null then
+    raise exception 'Sessão inválida ou expirada';
+  end if;
+  return query
+    select pa.fase_id, pa.estrelas, pa.pontuacao, pa.acertos,
+           pa.total_questoes, pa.concluida, pa.tentativas
+    from progresso_avatar pa
+    where pa.avatar_id = v_avatar
+    order by pa.fase_id;
+end;
+$carregar_e4$;
+
+create or replace function listar_fases_progresso(p_token text)
+returns table (
+  id int, ordem int, nome text, icone text, cor text, operacao_principal text,
+  dificuldade int, dica text, qtd_questoes int, tentativas int, tempo_seg int,
+  meta_uma numeric, meta_duas numeric, meta_tres numeric, extra boolean,
+  regras jsonb, total_problemas int,
+  status text, estrelas int, melhor_pontos int, concluida boolean
+)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $fases_progresso_e4$
+declare
+  v_avatar uuid := avatar_da_sessao(p_token);
+begin
+  if v_avatar is null then
+    raise exception 'Sessão inválida ou expirada';
+  end if;
+
+  return query
+    select f.id, f.ordem, f.nome, f.icone, f.cor, f.operacao_principal,
+           f.dificuldade, f.dica, f.qtd_questoes, f.tentativas, f.tempo_seg,
+           f.meta_uma, f.meta_duas, f.meta_tres, f.extra, f.regras,
+           (select count(*)::int from problemas p
+             where p.fase_id = f.id and p.ativo),
+           case
+             when coalesce(pa.concluida, false) then 'concluida'::text
+             when fase_liberada_para(v_avatar, f.id) then 'liberada'::text
+             else 'bloqueada'::text
+           end,
+           coalesce(pa.estrelas, 0),
+           coalesce(pa.pontuacao, 0),
+           coalesce(pa.concluida, false)
+    from fases f
+    left join progresso_avatar pa on pa.avatar_id = v_avatar and pa.fase_id = f.id
+    where f.ativo
+    order by f.ordem;
+end;
+$fases_progresso_e4$;
+
+-- salvar_resultado_fase — a RPC que o front ANTIGO chama. Mesmo nome, mesmos
+-- seis parâmetros, mesmo retorno; por dentro ela entrega para
+-- gravar_resultado(). Duas diferenças de propósito:
+--   - `p_estrelas` deixou de mandar: as estrelas saem das metas da fase, e
+--     não do número que o navegador enviou;
+--   - `p_pontos` é limitado ao máximo que a partida poderia valer.
+-- Sem as respostas da partida não há como saber erros, tempo nem combo.
+create or replace function salvar_resultado_fase(
+  p_token    text,
+  p_fase     int,
+  p_pontos   int,
+  p_estrelas int,
+  p_acertos  int,
+  p_total    int
+)
+returns table (fase int, estrelas int, melhor_pontos int, concluida boolean)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $salvar_e4$
+declare
+  v_avatar uuid := avatar_da_sessao(p_token);
+begin
+  if v_avatar is null then
+    raise exception 'Sessão inválida ou expirada';
+  end if;
+  if p_estrelas < 0 or p_estrelas > 3 then
+    raise exception 'Resultado inválido';
+  end if;
+
+  perform gravar_resultado(v_avatar, p_fase, p_pontos, p_acertos, null, p_total, null, null);
+
+  return query
+    select pa.fase_id, pa.estrelas, pa.pontuacao, pa.concluida
+    from progresso_avatar pa
+    where pa.avatar_id = v_avatar and pa.fase_id = p_fase;
+end;
+$salvar_e4$;
+
+-- -------------------------------------------------------------------------
+-- Permissões do Épico 4
+--
+-- Em projeto Supabase, função criada em `public` já nasce executável por
+-- `anon` e `authenticated` (privilégio padrão do schema). Então tirar só do
+-- PUBLIC, como este arquivo fazia, NÃO fecha a porta: é preciso tirar dos
+-- dois papéis pelo nome. Isso importa de verdade aqui — gravar_resultado()
+-- recebe o avatar direto, sem token; exposta, deixaria qualquer um gravar
+-- progresso de qualquer avatar sem saber o PIN.
+-- As três últimas linhas fecham, pelo mesmo motivo, as funções internas das
+-- seções anteriores.
+-- -------------------------------------------------------------------------
+revoke execute on function pontos_do_acerto(int, int, int, int)                      from public, anon, authenticated;
+revoke execute on function pontuacao_maxima(int, int)                                from public, anon, authenticated;
+revoke execute on function calcular_partida(jsonb, int, int)                         from public, anon, authenticated;
+revoke execute on function estrelas_do_resultado(int, int, numeric, numeric, numeric) from public, anon, authenticated;
+revoke execute on function nivel_da_recompensa(int)                                  from public, anon, authenticated;
+revoke execute on function metricas_do_avatar(uuid)                                  from public, anon, authenticated;
+revoke execute on function avaliar_conquistas(uuid)                                  from public, anon, authenticated;
+revoke execute on function progresso_dispara_conquistas()                            from public, anon, authenticated;
+revoke execute on function conquistas_reavalia_avatares()                            from public, anon, authenticated;
+revoke execute on function validar_criterio_da_conquista()                           from public, anon, authenticated;
+revoke execute on function gravar_resultado(uuid, int, int, int, int, int, int, int) from public, anon, authenticated;
+revoke execute on function conquistas_do_avatar(uuid)                                from public, anon, authenticated;
+revoke execute on function fases_do_avatar(uuid)                                     from public, anon, authenticated;
+revoke execute on function resumo_do_avatar(uuid)                                    from public, anon, authenticated;
+revoke execute on function avatar_da_sessao(text)                                    from public, anon, authenticated;
+revoke execute on function fase_liberada_para(uuid, int)                             from public, anon, authenticated;
+revoke execute on function semear_problemas()                                        from public, anon, authenticated;
+
+grant execute on function registrar_resultado_fase(text, int, jsonb, int) to anon;
+grant execute on function consultar_progresso(text) to anon;
+grant execute on function listar_conquistas(text) to anon;
+grant execute on function painel_progresso(text) to anon;
+grant execute on function carregar_progresso(text) to anon;
+grant execute on function listar_fases_progresso(text) to anon;
+grant execute on function salvar_resultado_fase(text, int, int, int, int, int) to anon;
+
+-- -------------------------------------------------------------------------
+-- Conferência final do Épico 4
+-- -------------------------------------------------------------------------
+do $valida_e4$
+declare
+  v_tipos       jsonb := metricas_do_avatar(null);
+  v_conquistas  int;
+  v_orfas       int;
+begin
+  select count(*) filter (where c.ativo),
+         count(*) filter (where not (v_tipos ? c.criterio_tipo))
+    into v_conquistas, v_orfas
+  from conquistas c;
+
+  if v_orfas > 0 then
+    raise warning '% conquista(s) com criterio_tipo desconhecido — nunca vão desbloquear.', v_orfas;
+  end if;
+
+  raise notice '--- Épico 4: % conquistas ativas, % linha(s) em progresso_avatar, % desbloqueio(s) ---',
+    v_conquistas,
+    (select count(*) from progresso_avatar),
+    (select count(*) from conquistas_avatar);
+end;
+$valida_e4$;
+
+-- =========================================================================
+-- Excluir avatar (✕ no cartão do avatar / Área do responsável)
 -- =========================================================================
 -- Os avatares são pré-definidos (seed lá em cima), então "excluir" não apaga
 -- a linha: apaga tudo o que foi criado para a criança (PIN, progresso,
 -- sessões, consentimento) e devolve o avatar para a lista de disponíveis.
--- Exige o PIN do avatar — é a única credencial que o sistema guarda.
 -- O responsável que ficar sem nenhum avatar também é apagado (LGPD: não
 -- guardar dado de contato sem finalidade).
-create or replace function excluir_avatar(p_avatar_id uuid, p_pin text)
+--
+-- NÃO pede mais o PIN do avatar: a exclusão passou a ser um ✕ no cartão,
+-- com uma confirmação na tela. Com isso um avatar de PIN esquecido também
+-- pode ser excluído. O preço é que qualquer pessoa com acesso ao jogo
+-- consegue excluir qualquer avatar — a única barreira é a confirmação na
+-- tela. Se isso deixar de servir, o lugar de voltar a exigir uma credencial
+-- é aqui (um parâmetro a mais e um `if` antes dos deletes).
+--
+-- Devolve true se excluiu e false se o avatar já não estava ativo.
+-- -------------------------------------------------------------------------
+
+-- A versão antiga pedia (avatar, PIN). `create or replace` não troca a lista
+-- de parâmetros — criaria uma segunda função ao lado —, então a antiga sai.
+drop function if exists excluir_avatar(uuid, text);
+
+create or replace function excluir_avatar(p_avatar_id uuid)
 returns boolean
 language plpgsql
 security definer
 set search_path = public, extensions
 as $$
 declare
-  v_hash        text;
   v_responsavel uuid;
 begin
-  select pin_hash, responsavel_id into v_hash, v_responsavel
+  select responsavel_id into v_responsavel
   from avatares
   where id = p_avatar_id and ativo = true
   for update;
 
-  if v_hash is null or v_hash <> crypt(p_pin, v_hash) then
+  if not found then
     return false;
   end if;
 
-  delete from progresso      where avatar_id = p_avatar_id;
-  delete from sessoes        where avatar_id = p_avatar_id;
-  delete from consentimentos where avatar_id = p_avatar_id;
+  delete from progresso         where avatar_id = p_avatar_id;
+  -- Épico 4: sem isto a próxima criança que pegasse este avatar herdaria as
+  -- medalhas e as conquistas da anterior.
+  delete from progresso_avatar  where avatar_id = p_avatar_id;
+  delete from conquistas_avatar where avatar_id = p_avatar_id;
+  delete from sessoes           where avatar_id = p_avatar_id;
+  delete from consentimentos    where avatar_id = p_avatar_id;
 
   update avatares
   set pin_hash = null, responsavel_id = null, ativo = false
@@ -1460,4 +2679,4 @@ begin
 end;
 $$;
 
-grant execute on function excluir_avatar(uuid, text) to anon;
+grant execute on function excluir_avatar(uuid) to anon;
